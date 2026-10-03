@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import mimetypes
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+from PIL import Image
+
+from knitarr.config import settings
+from knitarr.models import ExternalDetail, LicenseClass, PatternFormat
+from knitarr.parsers.oxs import metadata_from_oxs, parse_oxs, write_normalized
+from knitarr.services import dedupe
+
+log = logging.getLogger(__name__)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _detect_format(filename: str) -> PatternFormat:
+    lower = filename.lower()
+    if lower.endswith(".oxs"):
+        return PatternFormat.OXS
+    if lower.endswith(".pdf"):
+        return PatternFormat.PDF
+    if lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+        return PatternFormat.IMAGE
+    return PatternFormat.UNKNOWN
+
+
+async def download_urls(
+    urls: list[tuple[str, str]],
+    dest_dir: Path,
+    user_agent: str,
+) -> list[Path]:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    async with httpx.AsyncClient(
+        timeout=120.0,
+        headers={"User-Agent": user_agent},
+        follow_redirects=True,
+    ) as client:
+        for url, filename in urls:
+            dest = dest_dir / filename
+            if dest.exists():
+                paths.append(dest)
+                continue
+            resp = await client.get(url)
+            resp.raise_for_status()
+            dest.write_bytes(resp.content)
+            paths.append(dest)
+    return paths
+
+
+def _make_thumbnail(path: Path, thumb_path: Path) -> None:
+    try:
+        if path.suffix.lower() == ".pdf":
+            return
+        with Image.open(path) as im:
+            im.thumbnail((320, 320))
+            im.save(thumb_path, format="JPEG", quality=85)
+    except Exception as e:
+        log.debug("thumbnail failed: %s", e)
+
+
+def import_downloaded_files(
+    conn,
+    detail: ExternalDetail,
+    file_paths: list[Path],
+    external_release_id: int | None,
+) -> tuple[int | None, int | None, str]:
+    """Returns (pattern_id, duplicate_of, message)."""
+    if not file_paths:
+        return None, None, "No files to import"
+
+    primary = file_paths[0]
+    for p in file_paths:
+        if p.suffix.lower() in (".oxs", ".pdf"):
+            primary = p
+            break
+
+    checksum = _sha256_file(primary)
+    dup = dedupe.find_checksum_duplicate(conn, checksum)
+    if dup:
+        return None, dup, f"Duplicate file already in library (pattern #{dup})"
+
+    now = _utc_now()
+    fmt = _detect_format(primary.name)
+    pattern_dir = settings.library_dir / f"pending_{checksum[:12]}"
+    pattern_dir.mkdir(parents=True, exist_ok=True)
+    stored_files: list[tuple[Path, str, str]] = []
+
+    stored_names: list[str] = []
+    for src in file_paths:
+        dest = pattern_dir / src.name
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        cs = _sha256_file(dest)
+        mime, _ = mimetypes.guess_type(dest.name)
+        stored_files.append((dest, cs, mime or "application/octet-stream"))
+        stored_names.append(src.name)
+
+    normalized_path = None
+    structure_fp = None
+    meta_extra: dict = {}
+    if fmt == PatternFormat.OXS:
+        norm = parse_oxs(primary)
+        normalized_path = pattern_dir / "normalized.json"
+        write_normalized(normalized_path, norm)
+        structure_fp = dedupe.fingerprint_from_normalized(norm)
+        meta_extra = metadata_from_oxs(norm)
+        dup_struct = dedupe.find_structure_duplicate(conn, structure_fp)
+        if dup_struct:
+            shutil.rmtree(pattern_dir, ignore_errors=True)
+            return None, dup_struct, f"Duplicate structure matches pattern #{dup_struct}"
+
+    thumb_path = pattern_dir / "thumb.jpg"
+    _make_thumbnail(primary, thumb_path)
+    if not thumb_path.exists():
+        thumb_path = None
+
+    cur = conn.execute(
+        """
+        INSERT INTO patterns (
+            external_release_id, title, designer, source, source_url, pattern_url,
+            craft, description, license_class, redistribution_allowed, downloaded,
+            checksum_sha256, structure_fingerprint, pattern_format,
+            width_stitches, height_stitches, stitch_count, color_count, fabric_count,
+            floss_brand, date_discovered, date_downloaded, thumbnail_path, normalized_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            external_release_id,
+            detail.title,
+            detail.designer,
+            detail.indexer_id,
+            detail.source_url,
+            detail.pattern_url,
+            detail.craft,
+            detail.description,
+            detail.license_class.value,
+            1 if detail.redistribution_allowed else 0,
+            checksum,
+            structure_fp,
+            fmt.value,
+            meta_extra.get("width_stitches"),
+            meta_extra.get("height_stitches"),
+            meta_extra.get("stitch_count"),
+            meta_extra.get("color_count"),
+            meta_extra.get("fabric_count"),
+            meta_extra.get("floss_brand"),
+            now,
+            now,
+            str(thumb_path) if thumb_path else None,
+            str(normalized_path) if normalized_path else None,
+        ),
+    )
+    pattern_id = int(cur.lastrowid)
+    final_dir = settings.library_dir / str(pattern_id)
+    if pattern_dir != final_dir:
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        pattern_dir.rename(final_dir)
+        stored_files = [
+            (final_dir / name, cs, mime) for name, (_, cs, mime) in zip(stored_names, stored_files)
+        ]
+        if normalized_path:
+            normalized_path = final_dir / "normalized.json"
+        if thumb_path:
+            thumb_path = final_dir / "thumb.jpg"
+        conn.execute(
+            "UPDATE patterns SET thumbnail_path = ?, normalized_path = ? WHERE id = ?",
+            (
+                str(thumb_path) if thumb_path and thumb_path.exists() else None,
+                str(normalized_path) if normalized_path and normalized_path.exists() else None,
+                pattern_id,
+            ),
+        )
+
+    for path, cs, mime in stored_files:
+        conn.execute(
+            """
+            INSERT INTO pattern_files (pattern_id, role, path, filename, mime_type, checksum_sha256, size_bytes)
+            VALUES (?, 'original', ?, ?, ?, ?, ?)
+            """,
+            (pattern_id, str(path), path.name, mime, cs, path.stat().st_size),
+        )
+
+    dedupe.suggest_metadata_duplicates(
+        conn,
+        pattern_id,
+        detail.title,
+        meta_extra.get("width_stitches"),
+        meta_extra.get("height_stitches"),
+        meta_extra.get("color_count"),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO projects (pattern_id, status, progress_json, updated_at)
+        VALUES (?, 'not_started', '{}', ?)
+        """,
+        (pattern_id, now),
+    )
+
+    return pattern_id, None, "Imported successfully"
+
+
+def import_local_file(
+    conn,
+    src_path: Path,
+    title: str | None = None,
+    license_class: LicenseClass = LicenseClass.USER_OWNED,
+) -> tuple[int | None, int | None, str]:
+    detail = ExternalDetail(
+        indexer_id="manual",
+        external_id=src_path.name,
+        title=title or src_path.stem,
+        source_url=str(src_path),
+        license_class=license_class,
+        redistribution_allowed=False,
+        download_available=True,
+    )
+    return import_downloaded_files(conn, detail, [src_path], None)

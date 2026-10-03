@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chart>
+  <properties title="Knitarr Sample Heart" width="10" height="8" stitchesperinch="14"/>
+  <palette>
+    <palette_item index="0" number="cloth" name="cloth" color="FFFFFF" strands="2" symbol="32"/>
+    <palette_item index="1" number="DMC 310" name="Black" color="000000" strands="2" symbol="33"/>
+    <palette_item index="2" number="DMC 666" name="Bright Red" color="E31D42" strands="2" symbol="34"/>
+  </palette>
+  <fullstitches>
+    <stitch x="4" y="2" palindex="2"/>
+    <stitch x="5" y="2" palindex="2"/>
+    <stitch x="3" y="3" palindex="2"/>
+    <stitch x="4" y="3" palindex="2"/>
+    <stitch x="5" y="3" palindex="2"/>
+    <stitch x="6" y="3" palindex="2"/>
+    <stitch x="2" y="4" palindex="2"/>
+    <stitch x="3" y="4" palindex="2"/>
+    <stitch x="4" y="4" palindex="2"/>
+    <stitch x="5" y="4" palindex="2"/>
+    <stitch x="6" y="4" palindex="2"/>
+    <stitch x="7" y="4" palindex="2"/>
+    <stitch x="3" y="5" palindex="2"/>
+    <stitch x="4" y="5" palindex="2"/>
+    <stitch x="5" y="5" palindex="2"/>
+    <stitch x="6" y="5" palindex="2"/>
+    <stitch x="4" y="6" palindex="2"/>
+    <stitch x="5" y="6" palindex="2"/>
+    <stitch x="1" y="1" palindex="1"/>
+    <stitch x="8" y="1" palindex="1"/>
+  </fullstitches>
+  <backstitches/>
+  <ornaments_inc_knots_and_beads/>
+</chart>
