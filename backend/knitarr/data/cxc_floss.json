@@ -1,32 +1,5 @@
 [
   {
-    "number": "B5200",
-    "name": "Snow White",
-    "rgb": [
-      250,
-      250,
-      255
-    ]
-  },
-  {
-    "number": "Blanc",
-    "name": "White",
-    "rgb": [
-      252,
-      252,
-      252
-    ]
-  },
-  {
-    "number": "Ecru",
-    "name": "Ecru",
-    "rgb": [
-      237,
-      222,
-      196
-    ]
-  },
-  {
     "number": "01",
     "name": "White Tin",
     "rgb": [
@@ -4398,6 +4371,33 @@
       221,
       209,
       190
+    ]
+  },
+  {
+    "number": "B5200",
+    "name": "Snow White",
+    "rgb": [
+      250,
+      250,
+      255
+    ]
+  },
+  {
+    "number": "BLANC",
+    "name": "White",
+    "rgb": [
+      252,
+      252,
+      252
+    ]
+  },
+  {
+    "number": "ECRU",
+    "name": "Ecru",
+    "rgb": [
+      237,
+      222,
+      196
     ]
   }
 ]

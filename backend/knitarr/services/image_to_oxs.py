@@ -1,12 +1,9 @@
-"""Raster (image/PDF) → cross-stitch grid → OXS (PIL + DMC palette; tarraz tested but failed on small charts)."""
+"""Raster (image/PDF) → cross-stitch grid → OXS (PIL + preferred floss palette)."""
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import zipfile
-from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image
@@ -15,10 +12,16 @@ from knitarr.config import settings
 from knitarr.models import CropRect
 from knitarr.parsers.oxs import NormalizedPattern, PaletteEntry, write_oxs, write_normalized
 from knitarr.services.chart_recognize import RecognitionResult, recognize_chart_image
+from knitarr.services.floss_catalog import (
+    looks_like_dmc_label,
+    looks_like_floss_label,
+    nearest_dmc,
+    nearest_floss,
+    parse_hex_rgb,
+)
 
 log = logging.getLogger(__name__)
 
-_DMC_PATH = Path(__file__).resolve().parent.parent / "data" / "dmc_floss.json"
 _BACKGROUND_MIN = 248
 DOCUMENT_SUFFIXES = {".pdf", ".xps", ".oxps"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -44,12 +47,6 @@ def document_filetype(path: Path) -> str | None:
     if suffix == ".xsp" and looks_like_xps(path):
         return "xps"
     return None
-
-
-@lru_cache(maxsize=1)
-def _dmc_colors() -> list[dict]:
-    raw = json.loads(_DMC_PATH.read_text(encoding="utf-8"))
-    return raw
 
 
 def _apply_crop(im: Image.Image, crop: CropRect | None) -> Image.Image:
@@ -100,63 +97,17 @@ def _load_raster(path: Path, *, pdf_page: int = 0, pdf_zoom: float = 2.0) -> Ima
         return im.convert("RGB")
 
 
-def _srgb_to_lab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
-    def _lin(c: float) -> float:
-        c = c / 255.0
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+def _preferred_brand() -> str:
+    try:
+        from knitarr.services.supplies import get_preferred_floss_brand
 
-    r, g, b = _lin(rgb[0]), _lin(rgb[1]), _lin(rgb[2])
-    x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375
-    y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750
-    z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041
-    xn, yn, zn = 0.95047, 1.0, 1.08883
-
-    def _f(t: float) -> float:
-        return t ** (1.0 / 3.0) if t > 0.008856 else (7.787 * t + 16.0 / 116.0)
-
-    fx, fy, fz = _f(x / xn), _f(y / yn), _f(z / zn)
-    return 116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)
+        return get_preferred_floss_brand()
+    except Exception:
+        return "dmc"
 
 
-@lru_cache(maxsize=1)
-def _dmc_labs() -> list[tuple[dict, tuple[float, float, float]]]:
-    return [(entry, _srgb_to_lab(tuple(entry["rgb"]))) for entry in _dmc_colors()]
-
-
-def parse_hex_rgb(color: str) -> tuple[int, int, int]:
-    raw = color.strip().lstrip("#")
-    if len(raw) != 6:
-        raise ValueError("Colour must be 6-digit hex")
-    return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
-
-
-def nearest_dmc(rgb: tuple[int, int, int]) -> tuple[str, str, str]:
-    return _nearest_dmc(rgb)
-
-
-def looks_like_dmc_label(text: str | None) -> bool:
-    raw = (text or "").strip()
-    if not raw:
-        return False
-    if re.match(r"^colour\s+\d+$", raw, re.I):
-        return False
-    return bool(re.match(r"^(DMC\s+)?(\d{1,4}|Blanc|Ecru|B5200|White|Ecru)$", raw, re.I)) or raw.upper().startswith(
-        "DMC "
-    )
-
-
-def _nearest_dmc(rgb: tuple[int, int, int]) -> tuple[str, str, str]:
-    sl, sa, sb = _srgb_to_lab(rgb)
-    best = _dmc_colors()[0]
-    best_dist = 1e18
-    for entry, (ll, aa, bb) in _dmc_labs():
-        # Hue/chroma outweigh lightness so gold does not snap to olive-black.
-        dist = (sl - ll) ** 2 + 1.6 * (sa - aa) ** 2 + 1.6 * (sb - bb) ** 2
-        if dist < best_dist:
-            best_dist = dist
-            best = entry
-    r, g, b = best["rgb"]
-    return f"DMC {best['number']}", best["name"], f"{r:02X}{g:02X}{b:02X}"
+def _nearest_preferred(rgb: tuple[int, int, int]) -> tuple[str, str, str]:
+    return nearest_floss(rgb, brand=_preferred_brand())
 
 
 def convert_raster_to_normalized(
@@ -193,7 +144,7 @@ def _normalized_from_recognition(result: RecognitionResult, *, title: str) -> No
     )
 
     def pal_index(rgb: tuple[int, int, int]) -> int:
-        key = _nearest_dmc(rgb)
+        key = _nearest_preferred(rgb)
         if key not in palette_map:
             idx = len(norm.palette)
             number, name, color = key

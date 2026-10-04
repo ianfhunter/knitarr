@@ -54,9 +54,18 @@ class LospecIndexer:
 
     def _craft_q(self, query: str, craft: str) -> str:
         q = query.strip()
-        base = "pixel art"
-        if craft == "pixel_art":
-            base = "pixel art lospec"
+        # Lospec is a pixel-palette gallery; craft terms just bias the Openverse query.
+        bases = {
+            "cross_stitch": "pixel art cross stitch",
+            "crochet": "pixel art crochet",
+            "knitting": "pixel art knitting",
+            "diamond_painting": "pixel art mosaic",
+            "embroidery": "pixel art embroidery",
+            "sewing": "pixel art pattern",
+            "quilting": "pixel art quilt",
+            "other": "pixel art craft pattern",
+        }
+        base = bases.get(craft, "pixel art craft pattern")
         return f"{q} {base}".strip() if q else base
 
     def _hit_from_result(self, item: dict[str, Any], *, craft: str) -> ExternalHit | None:

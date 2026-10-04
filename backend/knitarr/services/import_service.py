@@ -129,12 +129,13 @@ def import_downloaded_files(
     normalized_path = None
     structure_fp = None
     meta_extra: dict = {}
+    oxs_norm = None
     if fmt == PatternFormat.OXS:
-        norm = parse_oxs(primary)
+        oxs_norm = parse_oxs(primary)
         normalized_path = pattern_dir / "normalized.json"
-        write_normalized(normalized_path, norm)
-        structure_fp = dedupe.fingerprint_from_normalized(norm)
-        meta_extra = metadata_from_oxs(norm)
+        write_normalized(normalized_path, oxs_norm)
+        structure_fp = dedupe.fingerprint_from_normalized(oxs_norm)
+        meta_extra = metadata_from_oxs(oxs_norm)
         dup_struct = dedupe.find_structure_duplicate(conn, structure_fp)
         if dup_struct:
             shutil.rmtree(pattern_dir, ignore_errors=True)
@@ -142,6 +143,31 @@ def import_downloaded_files(
 
     thumb_path = pattern_dir / "thumb.jpg"
     _make_thumbnail(primary, thumb_path)
+    if not thumb_path.exists():
+        # Prefer an accompanying image from the download before synthesizing a chart preview.
+        for src in file_paths:
+            if src.resolve() == primary.resolve():
+                continue
+            if src.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+                _make_thumbnail(src, thumb_path)
+                if thumb_path.exists():
+                    break
+    chart_preview_path = None
+    if oxs_norm is not None:
+        from knitarr.services.chart_export import CHART_PREVIEW_FILENAME, write_chart_preview_image
+
+        try:
+            chart_preview_path = write_chart_preview_image(
+                pattern_dir / CHART_PREVIEW_FILENAME, oxs_norm
+            )
+        except Exception as e:
+            log.debug("chart preview failed: %s", e)
+            chart_preview_path = None
+        if not thumb_path.exists() and chart_preview_path and chart_preview_path.is_file():
+            try:
+                shutil.copy2(chart_preview_path, thumb_path)
+            except OSError:
+                _make_thumbnail(chart_preview_path, thumb_path)
     if not thumb_path.exists():
         thumb_path = None
 
@@ -194,6 +220,10 @@ def import_downloaded_files(
             normalized_path = final_dir / "normalized.json"
         if thumb_path:
             thumb_path = final_dir / "thumb.jpg"
+        if chart_preview_path:
+            from knitarr.services.chart_export import CHART_PREVIEW_FILENAME
+
+            chart_preview_path = final_dir / CHART_PREVIEW_FILENAME
         conn.execute(
             "UPDATE patterns SET thumbnail_path = ?, normalized_path = ? WHERE id = ?",
             (
@@ -245,6 +275,23 @@ def import_downloaded_files(
         conv = None
     if conv:
         msg = f"{msg} {conv}"
+    elif oxs_norm is not None:
+        from knitarr.services.chart_export import upsert_chart_export, upsert_chart_preview
+
+        preview = upsert_chart_preview(conn, pattern_id, final_dir, oxs_norm)
+        thumb = final_dir / "thumb.jpg"
+        if preview and preview.is_file() and not thumb.is_file():
+            try:
+                shutil.copy2(preview, thumb)
+            except OSError:
+                _make_thumbnail(preview, thumb)
+            if thumb.is_file():
+                conn.execute(
+                    "UPDATE patterns SET thumbnail_path = ? WHERE id = ?",
+                    (str(thumb), pattern_id),
+                )
+        if upsert_chart_export(conn, pattern_id, final_dir, oxs_norm):
+            msg = f"{msg} Chart Export.pdf ready."
 
     return pattern_id, None, msg
 

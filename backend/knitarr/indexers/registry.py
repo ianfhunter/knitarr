@@ -52,7 +52,7 @@ def bootstrap_indexers() -> None:
                 name="Pixabay",
                 source="Pixabay",
                 site_url="https://pixabay.com/api/docs/",
-                description="Free API key — set KNITARR_PIXABAY_API_KEY for pixel art and illustration search.",
+                description="Free API key — set KNITARR_PIXABAY_API_KEY for illustration and craft-image search.",
                 status=IndexerStatus.INDEX_ONLY,
                 access_method="api",
             )

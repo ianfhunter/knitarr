@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     dmc_algolia_index: str = ""
     convert_max_width: int = 120
     convert_max_colors: int = 24
+    # Optional "owner/repo" for About → check GitHub releases (e.g. ianfhunter/splash).
+    github_repo: str = ""
+    # If set, only consider release tags that start with this prefix (e.g. "knitarr-").
+    github_release_prefix: str = "knitarr-"
 
     @property
     def samples_dir(self) -> Path:

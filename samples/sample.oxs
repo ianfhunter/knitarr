@@ -28,6 +28,12 @@
     <stitch x="1" y="1" palindex="1"/>
     <stitch x="8" y="1" palindex="1"/>
   </fullstitches>
+  <partstitches>
+    <partstitch x="2" y="2" palindex1="1" palindex2="0" direction="1"/>
+    <partstitch x="7" y="2" palindex1="1" palindex2="0" direction="2"/>
+  </partstitches>
   <backstitches/>
-  <ornaments_inc_knots_and_beads/>
+  <ornaments_inc_knots_and_beads>
+    <object x1="4.5" y1="5.5" palindex="1" objecttype="knot"/>
+  </ornaments_inc_knots_and_beads>
 </chart>

@@ -41,7 +41,9 @@ def init_indexer_craft() -> None:
             r["craft_id"] for r in conn.execute("SELECT craft_id FROM craft_files ORDER BY craft_id").fetchall()
         ]
         if not crafts:
-            crafts = ["cross_stitch", "crochet", "knitting", "pixel_art"]
+            from knitarr.services.craft_files import CRAFT_ORDER
+
+            crafts = list(CRAFT_ORDER)
         for idx in list_indexers():
             for craft_id in crafts:
                 if idx.id in _CROSS_STITCH_ONLY:

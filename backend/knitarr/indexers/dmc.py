@@ -21,19 +21,25 @@ _CRAFT_TAXON: dict[str, str] = {
     "cross_stitch": "patterns/free-patterns-by-craft/cross-stitch",
     "crochet": "patterns/free-patterns-by-craft/crochet",
     "knitting": "patterns/free-patterns-by-craft/knitting",
+    "embroidery": "patterns/free-patterns-by-craft/embroidery",
 }
 
 _CRAFT_LABEL: dict[str, str] = {
     "cross_stitch": "Cross Stitch",
     "crochet": "Crochet",
     "knitting": "Knitting",
+    "embroidery": "Embroidery",
 }
 
 _CRAFT_QUERY: dict[str, str] = {
     "cross_stitch": "cross stitch",
     "crochet": "crochet",
     "knitting": "knitting",
-    "pixel_art": "pattern",
+    "diamond_painting": "diamond painting",
+    "embroidery": "embroidery",
+    "sewing": "sewing",
+    "quilting": "quilting",
+    "other": "craft",
 }
 
 

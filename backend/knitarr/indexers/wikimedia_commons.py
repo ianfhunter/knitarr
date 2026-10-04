@@ -102,7 +102,11 @@ class WikimediaCommonsIndexer:
         "cross_stitch": 'cross-stitch OR "cross stitch"',
         "crochet": "crochet",
         "knitting": "knitting OR knit",
-        "pixel_art": '"pixel art" OR sprite OR spritesheet OR tileset',
+        "diamond_painting": '"diamond painting" OR "diamond art"',
+        "embroidery": "embroidery OR needlework",
+        "sewing": "sewing OR dressmaking",
+        "quilting": "quilting OR quilt",
+        "other": "craft OR handicraft OR textile pattern",
     }
 
     async def search(self, query: str, *, limit: int = 50, craft: str = "cross_stitch") -> list[ExternalHit]:

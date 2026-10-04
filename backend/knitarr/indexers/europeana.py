@@ -20,7 +20,11 @@ _CRAFT_QUERY = {
     "cross_stitch": "cross stitch OR cross-stitch OR embroidery chart",
     "crochet": "crochet",
     "knitting": "knitting OR knit",
-    "pixel_art": "pixel art OR embroidery chart OR cross-stitch pattern",
+    "diamond_painting": "diamond painting OR diamond art",
+    "embroidery": "embroidery OR needlework",
+    "sewing": "sewing OR dressmaking",
+    "quilting": "quilting OR quilt",
+    "other": "craft OR handicraft OR textile pattern",
 }
 
 

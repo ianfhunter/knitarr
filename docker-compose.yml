@@ -3,7 +3,9 @@ networks:
     external: true
 
 volumes:
+  # Pin absolute name so rebuilds from this directory still reuse splash_knitarr_data.
   knitarr_data:
+    name: splash_knitarr_data
 
 services:
   knitarr:
@@ -23,6 +25,8 @@ services:
       KNITARR_DMC_ALGOLIA_APP_ID: ${KNITARR_DMC_ALGOLIA_APP_ID:-}
       KNITARR_DMC_ALGOLIA_SEARCH_KEY: ${KNITARR_DMC_ALGOLIA_SEARCH_KEY:-}
       KNITARR_DMC_ALGOLIA_INDEX: ${KNITARR_DMC_ALGOLIA_INDEX:-}
+      KNITARR_GITHUB_REPO: ${KNITARR_GITHUB_REPO:-}
+      KNITARR_GITHUB_RELEASE_PREFIX: ${KNITARR_GITHUB_RELEASE_PREFIX:-knitarr-}
     volumes:
       - knitarr_data:/data
     healthcheck:

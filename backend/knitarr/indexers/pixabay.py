@@ -16,10 +16,14 @@ log = logging.getLogger(__name__)
 API = "https://pixabay.com/api/"
 
 _CRAFT_QUERY = {
-    "pixel_art": "pixel art",
-    "cross_stitch": "pixel art cross stitch",
-    "crochet": "pixel art",
-    "knitting": "pixel art",
+    "cross_stitch": "cross stitch pattern",
+    "crochet": "crochet pattern",
+    "knitting": "knitting pattern",
+    "diamond_painting": "diamond painting",
+    "embroidery": "embroidery pattern",
+    "sewing": "sewing pattern",
+    "quilting": "quilt pattern",
+    "other": "craft pattern",
 }
 
 
@@ -70,7 +74,7 @@ class PixabayIndexer:
 
     def _search_q(self, query: str, craft: str) -> str:
         q = query.strip()
-        base = _CRAFT_QUERY.get(craft, _CRAFT_QUERY["pixel_art"])
+        base = _CRAFT_QUERY.get(craft, _CRAFT_QUERY["cross_stitch"])
         return f"{q} {base}".strip() if q else base
 
     def _hit_from_hit(self, item: dict[str, Any], *, craft: str) -> ExternalHit | None:

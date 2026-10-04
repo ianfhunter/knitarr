@@ -17,10 +17,14 @@ SEARCH_URL = "https://api.si.edu/openaccess/api/v1.0/search"
 DETAIL_BASE = "https://www.si.edu/object"
 
 _CRAFT_QUERY = {
-    "cross_stitch": "cross stitch OR embroidery OR needlework",
+    "cross_stitch": "cross stitch OR needlework",
     "crochet": "crochet",
     "knitting": "knitting",
-    "pixel_art": "textile OR embroidery OR cross stitch",
+    "diamond_painting": "diamond painting OR craft pattern",
+    "embroidery": "embroidery OR needlework",
+    "sewing": "sewing OR dressmaking OR costume",
+    "quilting": "quilting OR quilt",
+    "other": "craft OR handicraft OR textile",
 }
 
 

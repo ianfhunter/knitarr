@@ -34,11 +34,41 @@ DEFAULT_CRAFTS: dict[str, dict] = {
         "label": "Knitting",
         "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".knt", ".skp", ".md"],
     },
-    "pixel_art": {
-        "label": "Pixel art",
-        "extensions": [".png", ".gif", ".webp", ".jpg", ".jpeg", ".zip", ".svg"],
+    "diamond_painting": {
+        "label": "Diamond Painting",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+    },
+    "embroidery": {
+        "label": "Embroidery",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".dst", ".pes", ".jef", ".exp"],
+    },
+    "sewing": {
+        "label": "Sewing",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+    },
+    "quilting": {
+        "label": "Quilting",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+    },
+    "other": {
+        "label": "Other",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".md", ".zip"],
     },
 }
+
+# Stable UI / API ordering.
+CRAFT_ORDER = (
+    "cross_stitch",
+    "crochet",
+    "knitting",
+    "diamond_painting",
+    "embroidery",
+    "sewing",
+    "quilting",
+    "other",
+)
+
+_REMOVED_CRAFTS = ("pixel_art",)
 
 
 def normalize_ext(ext: str) -> str:
@@ -80,12 +110,17 @@ def init_craft_files() -> None:
                 """,
                 (craft_id, spec["label"], json.dumps(spec["extensions"])),
             )
+            # Keep labels in sync with defaults; leave user-edited extensions alone.
+            conn.execute(
+                "UPDATE craft_files SET label = ? WHERE craft_id = ?",
+                (spec["label"], craft_id),
+            )
             row = conn.execute(
                 "SELECT extensions_json FROM craft_files WHERE craft_id = ?",
                 (craft_id,),
             ).fetchone()
             current = json.loads(row["extensions_json"]) if row else []
-            extra = [e for e in spec["extensions"] if e in {".saga", ".xps", ".oxps", ".xsp"}]
+            extra = [e for e in spec["extensions"] if e in {".saga", ".xps", ".oxps", ".xsp", ".dst", ".pes", ".jef", ".exp"}]
             merged = normalize_extensions(list(current) + extra)
             if merged != normalize_extensions(current):
                 conn.execute(
@@ -93,11 +128,33 @@ def init_craft_files() -> None:
                     (json.dumps(merged), craft_id),
                 )
 
+        for removed in _REMOVED_CRAFTS:
+            conn.execute("DELETE FROM craft_files WHERE craft_id = ?", (removed,))
+            try:
+                conn.execute("DELETE FROM indexer_craft WHERE craft_id = ?", (removed,))
+            except Exception:
+                pass
+            # Keep old library rows visible under Embroidery rather than orphaning them.
+            try:
+                conn.execute(
+                    "UPDATE patterns SET craft = 'embroidery' WHERE craft = ?",
+                    (removed,),
+                )
+            except Exception:
+                pass
+
+
+def _sort_key(craft_id: str) -> tuple[int, str]:
+    try:
+        return (CRAFT_ORDER.index(craft_id), craft_id)
+    except ValueError:
+        return (len(CRAFT_ORDER), craft_id)
+
 
 def list_crafts() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT craft_id, label, extensions_json, enabled FROM craft_files ORDER BY craft_id"
+            "SELECT craft_id, label, extensions_json, enabled FROM craft_files"
         ).fetchall()
     result = []
     for row in rows:
@@ -109,6 +166,7 @@ def list_crafts() -> list[dict]:
                 "enabled": bool(row["enabled"]),
             }
         )
+    result.sort(key=lambda c: _sort_key(c["craft_id"]))
     return result
 
 

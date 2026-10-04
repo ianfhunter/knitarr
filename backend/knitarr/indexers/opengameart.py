@@ -39,16 +39,20 @@ _SKIP_SLUGS = frozenset(
 )
 
 _CRAFT_QUERY = {
-    "pixel_art": "pixel sprite",
     "cross_stitch": "pixel sprite cross-stitch",
-    "crochet": "pixel",
-    "knitting": "pixel",
+    "crochet": "pixel crochet",
+    "knitting": "pixel knit",
+    "diamond_painting": "pixel mosaic",
+    "embroidery": "pixel embroidery",
+    "sewing": "pixel pattern",
+    "quilting": "pixel quilt",
+    "other": "pixel craft pattern",
 }
 
 
 def _search_keys(query: str, craft: str) -> str:
     q = query.strip()
-    prefix = _CRAFT_QUERY.get(craft, _CRAFT_QUERY["pixel_art"])
+    prefix = _CRAFT_QUERY.get(craft, _CRAFT_QUERY["cross_stitch"])
     if not q:
         return prefix
     return f"{q} {prefix}".strip()

@@ -8,10 +8,12 @@ from knitarr.config import settings
 from knitarr.db import get_conn
 from knitarr.indexers.registry import get_indexer, list_indexers
 from knitarr.models import (
+    BlankPatternRequest,
     ChartSaveRequest,
     ConvertChartRequest,
     CraftFilesUpdate,
     FileRenameRequest,
+    RegeneratePackageRequest,
     ImportResult,
     IndexerCraftUpdate,
     LicenseClass,
@@ -20,6 +22,7 @@ from knitarr.models import (
     ProjectStatus,
     ProjectUpdate,
     SearchResponse,
+    SuppliesUpdate,
 )
 from knitarr.services import catalog
 from knitarr.services.craft_files import get_craft, list_crafts, update_craft
@@ -30,6 +33,7 @@ from knitarr.services.indexer_craft import (
 )
 from knitarr.services.search_merge import fair_merge_hits
 from knitarr.services.import_service import import_from_indexer, import_local_file
+from knitarr.services.supplies import get_preferred_floss_brand, get_supplies, update_supplies
 
 router = APIRouter(prefix="/api")
 
@@ -57,6 +61,13 @@ def api_set_indexer_craft(indexer_id: str, body: IndexerCraftUpdate):
     return {"indexer_id": indexer_id, "craft_enabled": craft_enabled}
 
 
+@router.get("/about")
+async def api_about():
+    from knitarr.services.about import about_info
+
+    return await about_info()
+
+
 @router.get("/craft-files")
 def api_list_craft_files():
     return list_crafts()
@@ -77,21 +88,45 @@ def api_update_craft_files(craft_id: str, body: CraftFilesUpdate):
         raise HTTPException(400, str(e))
 
 
-@router.get("/dmc/nearest")
-def api_nearest_dmc(hex: str = Query(..., min_length=6, max_length=7)):
-    from knitarr.services.image_to_oxs import nearest_dmc, parse_hex_rgb
+@router.get("/supplies")
+def api_get_supplies():
+    return get_supplies()
+
+
+@router.put("/supplies")
+def api_update_supplies(body: SuppliesUpdate):
+    try:
+        return update_supplies(floss_brand=body.floss_brand)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/floss/nearest")
+def api_nearest_floss(
+    hex: str = Query(..., min_length=6, max_length=7),
+    brand: str | None = Query(default=None, description="Floss brand id; defaults to Supplies preference"),
+):
+    from knitarr.services.floss_catalog import nearest_floss, normalize_floss_brand, parse_hex_rgb
 
     try:
         rgb = parse_hex_rgb(hex)
-        number, name, color = nearest_dmc(rgb)
+        brand_id = normalize_floss_brand(brand) if brand else get_preferred_floss_brand()
+        number, name, color = nearest_floss(rgb, brand=brand_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return {
         "number": number,
         "name": name,
         "color": color,
+        "brand": brand_id,
         "rgb": [int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)],
     }
+
+
+@router.get("/dmc/nearest")
+def api_nearest_dmc(hex: str = Query(..., min_length=6, max_length=7)):
+    """Back-compat alias — uses preferred Supplies brand (not hard-coded DMC)."""
+    return api_nearest_floss(hex=hex, brand=None)
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -150,9 +185,10 @@ async def api_external_detail(
 @router.get("/patterns")
 def api_list_patterns(
     downloaded: bool | None = None,
+    craft: str | None = Query(None, description="Craft id, or 'other' for non primary crafts"),
     limit: int = Query(100, ge=1, le=500),
 ):
-    return catalog.list_patterns(downloaded_only=downloaded, limit=limit)
+    return catalog.list_patterns(downloaded_only=downloaded, craft=craft, limit=limit)
 
 
 @router.delete("/patterns/{pattern_id}")
@@ -193,8 +229,11 @@ def api_raster_preview(pattern_id: int, page: int = Query(1, ge=1)):
 def api_convert_pattern_chart(pattern_id: int, body: ConvertChartRequest | None = None):
     crop = body.crop if body else None
     pdf_page = body.pdf_page if body else None
+    symbol_mode = body.symbol_mode if body else None
     try:
-        message = catalog.convert_pattern_to_chart(pattern_id, crop=crop, pdf_page=pdf_page)
+        message = catalog.convert_pattern_to_chart(
+            pattern_id, crop=crop, pdf_page=pdf_page, symbol_mode=symbol_mode
+        )
     except KeyError:
         raise HTTPException(404, "Pattern not found")
     except PermissionError as e:
@@ -204,12 +243,81 @@ def api_convert_pattern_chart(pattern_id: int, body: ConvertChartRequest | None 
     return {"pattern_id": pattern_id, "message": message}
 
 
+@router.post("/patterns/{pattern_id}/regenerate-package")
+def api_regenerate_package(pattern_id: int, body: RegeneratePackageRequest | None = None):
+    symbol_mode = body.symbol_mode if body else None
+    try:
+        message = catalog.regenerate_pattern_package(pattern_id, symbol_mode=symbol_mode)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"pattern_id": pattern_id, "message": message}
+
+
+@router.post("/patterns/blank")
+def api_create_blank_pattern(body: BlankPatternRequest):
+    """Create an empty cross-stitch OXS project (default 20×20)."""
+    if body.craft and body.craft != "cross_stitch":
+        raise HTTPException(400, "Blank projects are currently only supported for cross stitch")
+    try:
+        detail = catalog.create_blank_pattern(
+            title=body.title,
+            width=body.width,
+            height=body.height,
+            craft=body.craft or "cross_stitch",
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return detail
+
+
 @router.get("/patterns/{pattern_id}")
 def api_pattern_detail(pattern_id: int):
     detail = catalog.get_pattern_detail(pattern_id)
     if not detail:
         raise HTTPException(404, "Pattern not found")
     return detail
+
+
+@router.get("/patterns/{pattern_id}/torrent")
+def api_pattern_torrent(pattern_id: int):
+    try:
+        payload, filename, _info_hash, _total = catalog.build_pattern_torrent(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return Response(
+        content=payload,
+        media_type="application/x-bittorrent",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/patterns/{pattern_id}/magnet")
+def api_pattern_magnet(pattern_id: int):
+    try:
+        return catalog.build_pattern_magnet(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/patterns/{pattern_id}/zip")
+def api_pattern_zip(pattern_id: int):
+    try:
+        payload, filename = catalog.build_pattern_zip(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.patch("/patterns/{pattern_id}")
@@ -245,6 +353,7 @@ def api_pattern_thumbnail(pattern_id: int):
 
 @router.get("/patterns/{pattern_id}/files")
 def api_pattern_files(pattern_id: int):
+    catalog.ensure_chart_export(pattern_id)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, filename, mime_type, role, size_bytes FROM pattern_files WHERE pattern_id = ?",
@@ -291,7 +400,14 @@ def api_pattern_normalized(pattern_id: int):
     path = Path(row["normalized_path"])
     if not path.is_file():
         raise HTTPException(404, "Normalized file missing")
-    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    from knitarr.parsers.oxs import normalized_from_dict
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(500, "Normalized file unreadable") from exc
+    # Expand implied TR/BR companions (Ursa often stores only the left half of a peak).
+    return JSONResponse(normalized_from_dict(raw).to_dict())
 
 
 @router.get("/patterns/{pattern_id}/project")

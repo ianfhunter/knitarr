@@ -11,8 +11,16 @@ from knitarr.parsers.oxs import NormalizedPattern, metadata_from_oxs
 from knitarr.parsers.saga import parse_saga
 from knitarr.services import dedupe
 from knitarr.services.checksum import sha256_file
+from knitarr.services.chart_export import (
+    CONVERSION_SOURCE_FILENAME,
+    upsert_chart_export,
+    upsert_chart_preview,
+)
+from knitarr.services.chart_symbol_modes import normalize_symbol_mode
 from knitarr.services.image_to_oxs import (
     RASTER_SUFFIXES,
+    _apply_crop,
+    _load_raster,
     convert_raster_to_normalized,
     looks_like_xps,
     write_conversion_artifacts,
@@ -33,12 +41,17 @@ def try_convert_upload_to_chart(
     craft: str,
     crop: CropRect | None = None,
     pdf_page: int = 0,
+    symbol_mode: str | None = None,
 ) -> str | None:
     if craft != "cross_stitch":
         return None
     suffix = primary.suffix.lower()
+    mode = normalize_symbol_mode(symbol_mode)
     if suffix in STRUCTURED_SUFFIXES:
         norm = parse_saga(primary, title=title)
+        recog = dict(norm.recognition or {})
+        recog["symbol_mode"] = mode
+        norm.recognition = recog
         return _store_normalized(
             conn,
             pattern_id,
@@ -46,6 +59,7 @@ def try_convert_upload_to_chart(
             norm,
             kind="Converted Saga chart",
             notes=[],
+            symbol_mode=mode,
         )
     if suffix == ".xsp" and not looks_like_xps(primary):
         raise ValueError(
@@ -55,6 +69,16 @@ def try_convert_upload_to_chart(
     if suffix not in RASTER_SUFFIXES and not (suffix == ".xsp" and looks_like_xps(primary)):
         return None
     try:
+        # Persist the cropped raster used for conversion (Chart Export page 1).
+        try:
+            from PIL import Image
+
+            src = _apply_crop(_load_raster(primary, pdf_page=pdf_page, pdf_zoom=3.0), crop)
+            src_path = pattern_dir / CONVERSION_SOURCE_FILENAME
+            src.convert("RGB").save(src_path, format="JPEG", quality=90, optimize=True)
+        except Exception as e:
+            log.warning("Could not save conversion source for pattern %s: %s", pattern_id, e)
+
         norm = convert_raster_to_normalized(primary, title=title, crop=crop, pdf_page=pdf_page)
         notes: list[str] = []
         if pdf_page > 0:
@@ -62,8 +86,15 @@ def try_convert_upload_to_chart(
             notes.append(f"{label} page {pdf_page + 1}")
         if crop:
             notes.append("cropped region")
+        recog = dict(norm.recognition or {})
+        recog["symbol_mode"] = mode
+        recog["conversion_source"] = CONVERSION_SOURCE_FILENAME
+        if crop:
+            recog["crop"] = {"x": crop.x, "y": crop.y, "w": crop.w, "h": crop.h}
+        if pdf_page >= 0:
+            recog["pdf_page"] = pdf_page + 1
+        norm.recognition = recog
         source = getattr(norm, "chart_source", None)
-        recog = norm.recognition or {}
         if source == "symbols":
             low = recog.get("low_confidence") or 0
             low_note = f", {low} low-confidence cells" if low else ""
@@ -74,7 +105,15 @@ def try_convert_upload_to_chart(
             kind = "Converted pixel image"
         else:
             kind = "Generated experimental chart"
-        return _store_normalized(conn, pattern_id, pattern_dir, norm, kind=kind, notes=notes)
+        return _store_normalized(
+            conn,
+            pattern_id,
+            pattern_dir,
+            norm,
+            kind=kind,
+            notes=notes,
+            symbol_mode=mode,
+        )
     except ValueError:
         raise
     except Exception as e:
@@ -90,9 +129,18 @@ def _store_normalized(
     *,
     kind: str,
     notes: list[str],
+    symbol_mode: str | None = None,
 ) -> str:
     oxs_path, json_path = write_conversion_artifacts(pattern_dir, norm)
-    conn.execute("DELETE FROM pattern_files WHERE pattern_id = ? AND role = 'derived'", (pattern_id,))
+    # Keep conversion_source.jpg; wipe other derived roles then re-add.
+    conn.execute(
+        """
+        DELETE FROM pattern_files
+        WHERE pattern_id = ? AND role = 'derived'
+          AND filename != ?
+        """,
+        (pattern_id, CONVERSION_SOURCE_FILENAME),
+    )
     meta = metadata_from_oxs(norm)
     structure_fp = dedupe.fingerprint_from_normalized(norm)
     conn.execute(
@@ -127,6 +175,26 @@ def _store_normalized(
         """,
         (pattern_id, str(oxs_path), oxs_path.name, mime or "application/xml", cs, oxs_path.stat().st_size),
     )
+    src = pattern_dir / CONVERSION_SOURCE_FILENAME
+    if src.is_file():
+        cs_s = sha256_file(src)
+        existing_src = conn.execute(
+            "SELECT id FROM pattern_files WHERE pattern_id = ? AND filename = ?",
+            (pattern_id, src.name),
+        ).fetchone()
+        if existing_src:
+            conn.execute(
+                "UPDATE pattern_files SET path = ?, mime_type = ?, checksum_sha256 = ?, size_bytes = ?, role = ? WHERE id = ?",
+                (str(src), "image/jpeg", cs_s, src.stat().st_size, "derived", existing_src["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO pattern_files (pattern_id, role, path, filename, mime_type, checksum_sha256, size_bytes)
+                VALUES (?, 'derived', ?, ?, ?, ?, ?)
+                """,
+                (pattern_id, str(src), src.name, "image/jpeg", cs_s, src.stat().st_size),
+            )
     preview = pattern_dir / "recognition.png"
     if preview.is_file():
         cs_p = sha256_file(preview)
@@ -151,6 +219,8 @@ def _store_normalized(
             )
         except Exception:
             pass
+    upsert_chart_preview(conn, pattern_id, pattern_dir, norm)
+    upsert_chart_export(conn, pattern_id, pattern_dir, norm, symbol_mode=symbol_mode)
     extra = f" ({', '.join(notes)})" if notes else ""
     w, h = meta.get("width_stitches"), meta.get("height_stitches")
     colors = meta.get("color_count")

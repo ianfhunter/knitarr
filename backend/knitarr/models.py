@@ -56,6 +56,13 @@ class CraftFilesUpdate(BaseModel):
     enabled: bool | None = None
 
 
+class SuppliesUpdate(BaseModel):
+    floss_brand: str | None = Field(
+        default=None,
+        description="Preferred embroidery floss brand id (e.g. dmc, anchor)",
+    )
+
+
 class IndexerCraftUpdate(BaseModel):
     craft_id: str
     enabled: bool
@@ -164,11 +171,29 @@ class CropRect(BaseModel):
 class ConvertChartRequest(BaseModel):
     crop: CropRect | None = None
     pdf_page: int | None = Field(default=None, ge=1, description="1-based PDF page for conversion")
+    symbol_mode: str | None = Field(
+        default=None,
+        description="Chart symbol mode: none|alphabet|numbers|symbols|alt",
+    )
+
+
+class RegeneratePackageRequest(BaseModel):
+    symbol_mode: str | None = Field(
+        default=None,
+        description="Chart symbol mode for Chart Export.pdf / preview",
+    )
 
 
 class PatternUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+
+
+class BlankPatternRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    width: int = Field(default=20, ge=1, le=800)
+    height: int = Field(default=20, ge=1, le=800)
+    craft: str = "cross_stitch"
 
 
 class FileRenameRequest(BaseModel):
@@ -181,6 +206,7 @@ class PaletteItemIn(BaseModel):
     name: str = ""
     color: str
     symbol: str | None = None
+    strands: int = Field(default=2, ge=1, le=6)
 
 
 class FullStitchIn(BaseModel):
@@ -190,17 +216,38 @@ class FullStitchIn(BaseModel):
 
 
 class BackstitchIn(BaseModel):
-    x1: int
-    y1: int
-    x2: int
-    y2: int
+    x1: float
+    y1: float
+    x2: float
+    y2: float
     palindex: int
+
+
+class PartStitchIn(BaseModel):
+    x: int
+    y: int
+    palindex1: int = 0
+    palindex2: int = 0
+    direction: int = Field(default=1, ge=1, le=4)
+    major: int | None = None
+
+
+class OrnamentIn(BaseModel):
+    x: float
+    y: float
+    palindex: int
+    objecttype: str = "knot"
+    direction: int | None = None
 
 
 class ChartSaveRequest(BaseModel):
     title: str | None = None
     width_stitches: int = Field(ge=1, le=800)
     height_stitches: int = Field(ge=1, le=800)
+    fabric_count: int | None = Field(default=None, ge=6, le=40)
     palette: list[PaletteItemIn]
     full_stitches: list[FullStitchIn]
     backstitches: list[BackstitchIn] = Field(default_factory=list)
+    part_stitches: list[PartStitchIn] = Field(default_factory=list)
+    ornaments: list[OrnamentIn] = Field(default_factory=list)
+    symbol_mode: str | None = None

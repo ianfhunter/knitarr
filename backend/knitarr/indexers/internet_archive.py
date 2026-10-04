@@ -27,10 +27,14 @@ DETAILS_BASE = "https://archive.org/details/{identifier}"
 
 
 _CRAFT_QUERY = {
-    "cross_stitch": '(subject:"Cross-stitch" OR title:cross-stitch OR "cross stitch" OR cross-stitch OR embroidery)',
+    "cross_stitch": '(subject:"Cross-stitch" OR title:cross-stitch OR "cross stitch" OR cross-stitch)',
     "crochet": '(crochet OR "crochet pattern")',
     "knitting": '(knitting OR knit OR "knitting pattern")',
-    "pixel_art": '("pixel art" OR sprites OR sprite OR tileset OR "8-bit" OR 8bit)',
+    "diamond_painting": '("diamond painting" OR "diamond art" OR "diamond dot")',
+    "embroidery": '(embroidery OR "embroidery pattern" OR "hand embroidery")',
+    "sewing": '(sewing OR "sewing pattern" OR "dressmaking")',
+    "quilting": '(quilting OR quilt OR "quilt pattern")',
+    "other": '(craft OR handicraft OR "craft pattern")',
 }
 
 
