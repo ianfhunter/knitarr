@@ -8,7 +8,15 @@ from urllib.parse import quote
 import httpx
 
 from knitarr.config import settings
-from knitarr.models import DownloadSpec, ExternalDetail, ExternalHit, IndexerCapabilities, LicenseClass
+from knitarr.services.craft_files import file_matches_craft
+from knitarr.models import (
+    DownloadSpec,
+    ExternalDetail,
+    ExternalHit,
+    IndexerCapabilities,
+    IndexerStatus,
+    LicenseClass,
+)
 
 log = logging.getLogger(__name__)
 
@@ -18,15 +26,23 @@ DOWNLOAD_BASE = "https://archive.org/download/{identifier}/{filename}"
 DETAILS_BASE = "https://archive.org/details/{identifier}"
 
 
-def _build_query(user_query: str) -> str:
-    craft = '(subject:"Cross-stitch" OR title:cross-stitch OR "cross stitch" OR cross-stitch)'
+_CRAFT_QUERY = {
+    "cross_stitch": '(subject:"Cross-stitch" OR title:cross-stitch OR "cross stitch" OR cross-stitch OR embroidery)',
+    "crochet": '(crochet OR "crochet pattern")',
+    "knitting": '(knitting OR knit OR "knitting pattern")',
+    "pixel_art": '("pixel art" OR sprites OR sprite OR tileset OR "8-bit" OR 8bit)',
+}
+
+
+def _build_query(user_query: str, craft: str = "cross_stitch") -> str:
+    craft_q = _CRAFT_QUERY.get(craft, _CRAFT_QUERY["cross_stitch"])
     user_query = user_query.strip()
     if not user_query:
-        return craft
+        return craft_q
     safe = user_query.replace('"', "")
     if " " not in safe and all(c.isalnum() or c in "-_" for c in safe):
-        return f'{craft} AND (identifier:{safe} OR title:({safe}) OR description:({safe}))'
-    return f'{craft} AND (title:({safe}) OR description:({safe}))'
+        return f"{craft_q} AND (identifier:{safe} OR title:({safe}) OR description:({safe}))"
+    return f"{craft_q} AND (title:({safe}) OR description:({safe}))"
 
 
 def _creator_str(meta: dict[str, Any]) -> str | None:
@@ -44,22 +60,28 @@ def _is_restricted(meta: dict[str, Any]) -> bool:
 
 def _score_file(name: str, size: int) -> tuple[int, int]:
     lower = name.lower()
+    if "_thumb" in lower or lower.startswith("__"):
+        return (99, 0)
     if lower.endswith(".oxs"):
         return (0, -size)
-    if lower.endswith(".pdf"):
+    if lower.endswith(".saga"):
         return (1, -size)
-    if lower.endswith((".jpg", ".jpeg", ".png")):
-        if "_thumb" in lower or lower.startswith("__"):
-            return (99, 0)
+    if lower.endswith((".xps", ".oxps")):
         return (2, -size)
-    return (50, -size)
+    if lower.endswith(".pdf"):
+        return (3, -size)
+    if lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+        return (4, -size)
+    return (10, -size)
 
 
-def _pick_files(files: list[dict[str, Any]]) -> list[tuple[str, int]]:
+def _pick_files(files: list[dict[str, Any]], craft: str) -> list[tuple[str, int]]:
     candidates: list[tuple[str, int]] = []
     for f in files:
         name = f.get("name") or ""
         if not name or name.endswith(".torrent"):
+            continue
+        if not file_matches_craft(name, craft):
             continue
         fmt = (f.get("format") or "").lower()
         if "metadata" in fmt:
@@ -84,6 +106,10 @@ class InternetArchiveIndexer:
         automated_access_policy="Use documented Search Scrape and Metadata APIs with descriptive User-Agent; honor 429/Retry-After.",
         license_default=LicenseClass.UNKNOWN,
         can_download=True,
+        status=IndexerStatus.ACTIVE,
+        site_url="https://archive.org",
+        description="Public-domain and community-uploaded books, PDFs, and pattern scans.",
+        search_enabled=True,
     )
 
     def __init__(self) -> None:
@@ -126,7 +152,9 @@ class InternetArchiveIndexer:
         resp = await self._request("GET", url)
         return resp.json()
 
-    def _hit_from_item(self, item: dict[str, Any], meta: dict[str, Any] | None = None) -> ExternalHit:
+    def _hit_from_item(
+        self, item: dict[str, Any], meta: dict[str, Any] | None = None, *, craft: str = "cross_stitch"
+    ) -> ExternalHit:
         identifier = item.get("identifier") or item.get("external_id") or ""
         title = item.get("title") or meta.get("title") if meta else None
         if isinstance(title, list):
@@ -149,14 +177,15 @@ class InternetArchiveIndexer:
             description=str(desc)[:2000] if desc else None,
             source_url=DETAILS_BASE.format(identifier=identifier),
             pattern_url=DETAILS_BASE.format(identifier=identifier),
+            craft=craft,
             license_class=LicenseClass.UNKNOWN,
             redistribution_allowed=False,
             thumbnail_url=thumb,
             metadata={"licenseurl": license_url, "mediatype": item.get("mediatype")},
         )
 
-    async def search(self, query: str, *, limit: int = 50) -> list[ExternalHit]:
-        q = _build_query(query)
+    async def search(self, query: str, *, limit: int = 50, craft: str = "cross_stitch") -> list[ExternalHit]:
+        q = _build_query(query, craft)
         params = {
             "q": q,
             "fields": "identifier,title,creator,description,licenseurl,mediatype",
@@ -170,26 +199,28 @@ class InternetArchiveIndexer:
             if not ident:
                 continue
             try:
-                meta = await self._fetch_metadata(ident)
-                if _is_restricted(meta.get("metadata", {})):
+                payload = await self._fetch_metadata(ident)
+                if _is_restricted(payload.get("metadata", {})):
                     continue
-                hits.append(self._hit_from_item(item, meta.get("metadata", {})))
+                if not _pick_files(payload.get("files") or [], craft):
+                    continue
+                hits.append(self._hit_from_item(item, payload.get("metadata", {}), craft=craft))
             except httpx.HTTPError as e:
                 log.debug("skip %s: %s", ident, e)
-                hits.append(self._hit_from_item(item))
+                continue
             if len(hits) >= limit:
                 break
         return hits
 
-    async def search_by_tag(self, tag: str, *, limit: int = 50) -> list[ExternalHit]:
-        return await self.search(tag, limit=limit)
+    async def search_by_tag(self, tag: str, *, limit: int = 50, craft: str = "cross_stitch") -> list[ExternalHit]:
+        return await self.search(tag, limit=limit, craft=craft)
 
-    async def get_pattern(self, external_id: str) -> ExternalDetail:
+    async def get_pattern(self, external_id: str, *, craft: str = "cross_stitch") -> ExternalDetail:
         payload = await self._fetch_metadata(external_id)
         meta = payload.get("metadata", {})
         files = payload.get("files") or []
-        hit = self._hit_from_item({"identifier": external_id, **meta}, meta)
-        picked = _pick_files(files)
+        hit = self._hit_from_item({"identifier": external_id, **meta}, meta, craft=craft)
+        picked = _pick_files(files, craft)
         download_available = bool(picked) and not _is_restricted(meta)
         suggested = picked[0][0] if picked else None
         detail = ExternalDetail(
@@ -203,19 +234,19 @@ class InternetArchiveIndexer:
     async def get_metadata(self, external_id: str) -> dict:
         return await self._fetch_metadata(external_id)
 
-    async def get_download(self, external_id: str) -> DownloadSpec | None:
+    async def get_download(self, external_id: str, *, craft: str = "cross_stitch") -> DownloadSpec | None:
         payload = await self._fetch_metadata(external_id)
         meta = payload.get("metadata", {})
         if _is_restricted(meta):
             return None
-        picked = _pick_files(payload.get("files") or [])
+        picked = _pick_files(payload.get("files") or [], craft)
         if not picked:
             return None
-        # Multi-page JPEG pamphlets: download all page images
+        image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp")
         image_pages = [
             (n, s)
             for n, s in picked
-            if n.lower().endswith((".jpg", ".jpeg", ".png")) and "_thumb" not in n.lower()
+            if n.lower().endswith(image_exts) and "_thumb" not in n.lower()
         ]
         if len(image_pages) > 1 and not any(n.lower().endswith(".pdf") for n, _ in picked):
             urls = [

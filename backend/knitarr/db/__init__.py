@@ -19,6 +19,7 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     conn = _connect()
     try:
+        conn.execute("DROP TABLE IF EXISTS wanted_items")
         conn.executescript(_SCHEMA.read_text())
         conn.commit()
     finally:

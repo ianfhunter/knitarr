@@ -1,6 +1,6 @@
 # Knitarr v0.1.0
 
-Self-hosted cross-stitch pattern library — search legitimate sources, track wanted patterns, import into a local library, and view charts in the browser.
+Self-hosted cross-stitch pattern library — search legitimate sources, import into a local library, and view charts in the browser.
 
 Radarr/Sonarr-style flow for craft patterns (MVP focuses on cross-stitch).
 
@@ -22,16 +22,15 @@ git push -u origin main
 git push origin v0.1.0
 ```
 
-Open `http://localhost:8765` (or `KNITARR_PORT`).
+On the Splash stack, use **https://knitarr.internal** (via root `nginx.conf`). For local-only Docker without nginx, temporarily publish `8765:8765` in `docker-compose.yml`.
 
 ## MVP status
 
 ### What works (verified E2E)
 
-- **Internet Archive indexer** — search, metadata, add to wanted, background download/import
+- **Internet Archive indexer** — search, metadata, download/import
 - **Demo items imported:** `the-unicorn-book` (multi-page JPEG), `sigerus-hough-2023-charted-folk-designs` (PDF)
 - **Dedupe:** re-importing sample OXS returns duplicate of pattern #1
-- **Wanted queue** — worker polls every ~15s with polite User-Agent and rate-limit backoff
 - **Library** — downloaded patterns with checksum deduplication
 - **OXS** — parse, normalized JSON, grid viewer with legend, zoom, progress marks
 - **PDF / images** — inline PDF iframe; multi-page JPEG sets with zoom
@@ -43,6 +42,12 @@ Open `http://localhost:8765` (or `KNITARR_PORT`).
 | Source | Status |
 |--------|--------|
 | Internet Archive | **Working** — Scrape Search + Metadata API |
+| Antique Pattern Library | **Working** — catalog search + public-domain PDF download |
+| Cross Stitch Quest | **Working** — free posts via WordPress.com API |
+| Wizardi free charts | **Search** — Shopify listing; download via their free checkout, then import |
+| CyberStitchers | **Working** — free PDF/PAT catalog search + download |
+| Cross-Stitch.com | **Working** — semantic search + public PDF download |
+| FreePatternsOnline | **Working** — catalog via Wayback (live site is Cloudflare-gated) |
 | DMC / blogs / Etsy | **Not automated** — index-only or manual import only (see [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md)) |
 
 ### Formats
@@ -51,6 +56,9 @@ Open `http://localhost:8765` (or `KNITARR_PORT`).
 |--------|--------|------|
 | OXS | Yes | Stitch grid + legend |
 | PDF | Yes (IA) | Browser iframe |
+| XPS / OpenXPS | Yes | Raster preview + stitch-chart conversion (same path as PDF) |
+| Saga `.saga` | Yes | OXS when the ZIP contains readable chart XML; encrypted designer files stay original-only |
+| XSPro `.xsp` | Yes | Original stored; convert only if the file is actually an XPS document |
 | JPEG/PNG scans | Yes (IA) | Pan/zoom |
 | PCStitch `.pat` | No | — |
 
@@ -88,8 +96,8 @@ cd frontend && npm install && npm run dev
 ## API (selected)
 
 - `GET /api/search?q=…`
-- `POST /api/wanted` `{ "indexer_id", "external_id" }`
-- `GET /api/wanted`, `GET /api/patterns`
+- `POST /api/import/from-indexer` `{ "indexer_id", "external_id" }`
+- `GET /api/patterns`
 - `GET /api/patterns/{id}/normalized`
 - `POST /api/import/sample-oxs`
 
@@ -99,6 +107,5 @@ cd frontend && npm install && npm run dev
 |----------|---------|
 | `KNITARR_DATA_DIR` | `/data` |
 | `KNITARR_IA_USER_AGENT` | Knitarr/0.1 … |
-| `KNITARR_WORKER_INTERVAL_SEC` | `15` |
 
 See [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) for format and licensing research.

@@ -1,5 +1,19 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS craft_files (
+    craft_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    extensions_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS indexer_craft (
+    indexer_id TEXT NOT NULL,
+    craft_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (indexer_id, craft_id)
+);
+
 CREATE TABLE IF NOT EXISTS indexers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -64,16 +78,6 @@ CREATE TABLE IF NOT EXISTS patterns (
     pattern_group_id INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS wanted_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    external_release_id INTEGER NOT NULL REFERENCES external_releases(id),
-    status TEXT NOT NULL DEFAULT 'wanted',
-    added_at TEXT NOT NULL,
-    last_checked_at TEXT,
-    error TEXT,
-    pattern_id INTEGER REFERENCES patterns(id)
-);
-
 CREATE TABLE IF NOT EXISTS pattern_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pattern_id INTEGER NOT NULL REFERENCES patterns(id) ON DELETE CASCADE,
@@ -118,4 +122,3 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS idx_patterns_checksum ON patterns(checksum_sha256);
 CREATE INDEX IF NOT EXISTS idx_patterns_structure_fp ON patterns(structure_fingerprint);
-CREATE INDEX IF NOT EXISTS idx_wanted_status ON wanted_items(status);

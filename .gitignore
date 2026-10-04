@@ -1,4 +1,9 @@
-data/
+# Runtime storage / personal library (never commit)
+/data/
+library/
+*.db
+*.sqlite
+
 .env
 frontend/node_modules/
 frontend/dist/

@@ -28,15 +28,19 @@ class NormalizedPattern:
     height_stitches: int = 0
     fabric_count: int | None = None
     palette: list[PaletteEntry] = field(default_factory=list)
-    full_stitches: list[dict[str, int]] = field(default_factory=list)
+    full_stitches: list[dict[str, Any]] = field(default_factory=list)
     backstitches: list[dict[str, Any]] = field(default_factory=list)
+    recognition: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        if not d.get("recognition"):
+            d.pop("recognition", None)
         return d
 
     def color_count(self) -> int:
         used = {s["palindex"] for s in self.full_stitches if s.get("palindex", 0) > 0}
+        used |= {s["palindex"] for s in self.backstitches if s.get("palindex", 0) > 0}
         return len(used)
 
 
@@ -130,14 +134,63 @@ def write_normalized(path: Path, norm: NormalizedPattern) -> None:
     path.write_text(json.dumps(norm.to_dict(), indent=2), encoding="utf-8")
 
 
+def write_oxs(path: Path, norm: NormalizedPattern) -> None:
+    """Write Ursa-style OXS XML from normalized pattern."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    title = norm.title or "Converted pattern"
+    w = norm.width_stitches or 1
+    h = norm.height_stitches or 1
+    spi = norm.fabric_count or 14
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        "<chart>",
+        f'  <properties title="{_xml_escape(title)}" width="{w}" height="{h}" stitchesperinch="{spi}"/>',
+        "  <palette>",
+    ]
+    for pe in sorted(norm.palette, key=lambda p: p.index):
+        sym = pe.symbol or str(33 + (pe.index % 90))
+        lines.append(
+            f'    <palette_item index="{pe.index}" number="{_xml_escape(pe.number)}" '
+            f'name="{_xml_escape(pe.name)}" color="{pe.color.lstrip("#")}" strands="2" symbol="{_xml_escape(sym)}"/>'
+        )
+    lines.append("  </palette>")
+    lines.append("  <fullstitches>")
+    for s in norm.full_stitches:
+        lines.append(f'    <stitch x="{s["x"]}" y="{s["y"]}" palindex="{s["palindex"]}"/>')
+    lines.append("  </fullstitches>")
+    lines.append("  <backstitches>")
+    for b in norm.backstitches:
+        lines.append(
+            f'    <backstitch x1="{int(b["x1"])}" y1="{int(b["y1"])}" '
+            f'x2="{int(b["x2"])}" y2="{int(b["y2"])}" palindex="{int(b["palindex"])}"/>'
+        )
+    lines.append("  </backstitches>")
+    lines.append("  <ornaments_inc_knots_and_beads/>")
+    lines.append("</chart>")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _xml_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def structure_fingerprint(norm: NormalizedPattern) -> str:
     import hashlib
 
     stitches = sorted(
         (s["x"], s["y"], s["palindex"]) for s in norm.full_stitches
     )
+    backs = sorted(
+        (int(b["x1"]), int(b["y1"]), int(b["x2"]), int(b["y2"]), int(b["palindex"]))
+        for b in norm.backstitches
+    )
     codes = sorted(p.number for p in norm.palette if p.index > 0)
-    payload = f"{norm.width_stitches}x{norm.height_stitches}|{stitches}|{codes}"
+    payload = f"{norm.width_stitches}x{norm.height_stitches}|{stitches}|{backs}|{codes}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 

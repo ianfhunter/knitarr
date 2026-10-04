@@ -12,14 +12,17 @@ services:
     restart: unless-stopped
     networks:
       - splash_default
-    ports:
-      - "${KNITARR_PORT:-8765}:8765"
     environment:
       KNITARR_DATA_DIR: /data
       KNITARR_DB_PATH: /data/knitarr.db
       KNITARR_LIBRARY_DIR: /data/library
       KNITARR_IA_USER_AGENT: ${KNITARR_IA_USER_AGENT:-Knitarr/0.1 (self-hosted; contact via local admin)}
-      KNITARR_WORKER_INTERVAL_SEC: ${KNITARR_WORKER_INTERVAL_SEC:-15}
+      KNITARR_EUROPEANA_API_KEY: ${KNITARR_EUROPEANA_API_KEY:-apidemo}
+      KNITARR_SI_API_KEY: ${KNITARR_SI_API_KEY:-}
+      KNITARR_PIXABAY_API_KEY: ${KNITARR_PIXABAY_API_KEY:-}
+      KNITARR_DMC_ALGOLIA_APP_ID: ${KNITARR_DMC_ALGOLIA_APP_ID:-}
+      KNITARR_DMC_ALGOLIA_SEARCH_KEY: ${KNITARR_DMC_ALGOLIA_SEARCH_KEY:-}
+      KNITARR_DMC_ALGOLIA_INDEX: ${KNITARR_DMC_ALGOLIA_INDEX:-}
     volumes:
       - knitarr_data:/data
     healthcheck:

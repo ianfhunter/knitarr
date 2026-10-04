@@ -1,74 +1,150 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from knitarr.config import settings
 from knitarr.db import get_conn
 from knitarr.indexers.registry import get_indexer, list_indexers
 from knitarr.models import (
+    ChartSaveRequest,
+    ConvertChartRequest,
+    CraftFilesUpdate,
+    FileRenameRequest,
     ImportResult,
+    IndexerCraftUpdate,
     LicenseClass,
+    ImportFromIndexer,
+    PatternUpdate,
     ProjectStatus,
     ProjectUpdate,
     SearchResponse,
-    WantedCreate,
 )
 from knitarr.services import catalog
-from knitarr.services.import_service import import_local_file
+from knitarr.services.craft_files import get_craft, list_crafts, update_craft
+from knitarr.services.indexer_craft import (
+    is_indexer_enabled_for_craft,
+    list_indexer_craft_matrix,
+    set_indexer_craft_enabled,
+)
+from knitarr.services.search_merge import fair_merge_hits
+from knitarr.services.import_service import import_from_indexer, import_local_file
 
 router = APIRouter(prefix="/api")
 
 
 @router.get("/indexers")
 def api_indexers():
+    matrix = list_indexer_craft_matrix()
     return [
         {
             "id": idx.id,
             "name": idx.name,
             "capabilities": idx.capabilities.model_dump(),
+            "craft_enabled": matrix.get(idx.id, {}),
         }
         for idx in list_indexers()
     ]
 
 
+@router.put("/indexers/{indexer_id}/craft")
+def api_set_indexer_craft(indexer_id: str, body: IndexerCraftUpdate):
+    try:
+        craft_enabled = set_indexer_craft_enabled(indexer_id, body.craft_id, body.enabled)
+    except KeyError:
+        raise HTTPException(404, "Indexer or craft not found")
+    return {"indexer_id": indexer_id, "craft_enabled": craft_enabled}
+
+
+@router.get("/craft-files")
+def api_list_craft_files():
+    return list_crafts()
+
+
+@router.put("/craft-files/{craft_id}")
+def api_update_craft_files(craft_id: str, body: CraftFilesUpdate):
+    try:
+        return update_craft(
+            craft_id,
+            label=body.label,
+            extensions=body.extensions,
+            enabled=body.enabled,
+        )
+    except KeyError:
+        raise HTTPException(404, "Craft not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/dmc/nearest")
+def api_nearest_dmc(hex: str = Query(..., min_length=6, max_length=7)):
+    from knitarr.services.image_to_oxs import nearest_dmc, parse_hex_rgb
+
+    try:
+        rgb = parse_hex_rgb(hex)
+        number, name, color = nearest_dmc(rgb)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "number": number,
+        "name": name,
+        "color": color,
+        "rgb": [int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)],
+    }
+
+
 @router.get("/search", response_model=SearchResponse)
 async def api_search(
     q: str = Query("", min_length=0),
-    indexer_id: str = "internet_archive",
+    indexer_id: str = Query("internet_archive"),
+    craft: str = Query("cross_stitch"),
     limit: int = Query(30, ge=1, le=50),
+):
+    if get_craft(craft) is None:
+        raise HTTPException(400, "Unknown craft")
+    if indexer_id == "all":
+        per_source = max(1, limit)
+        hit_lists: list[list] = []
+        for idx in list_indexers():
+            cap = idx.capabilities
+            if not cap.search_enabled or cap.status.value == "planned":
+                continue
+            if not is_indexer_enabled_for_craft(idx.id, craft):
+                continue
+            try:
+                hit_lists.append(await idx.search(q, limit=per_source, craft=craft))
+            except Exception:
+                hit_lists.append([])
+        merged = fair_merge_hits(hit_lists, limit)
+        return SearchResponse(query=q, indexer_id="all", craft=craft, results=merged)
+
+    try:
+        indexer = get_indexer(indexer_id)
+    except KeyError:
+        raise HTTPException(404, "Indexer not found")
+    if not indexer.capabilities.search_enabled:
+        raise HTTPException(400, "This indexer does not support search")
+    if not is_indexer_enabled_for_craft(indexer_id, craft):
+        raise HTTPException(400, "This indexer is disabled for the selected craft")
+    try:
+        results = await indexer.search(q, limit=limit, craft=craft)
+    except Exception as e:
+        raise HTTPException(502, f"Search failed: {e}") from e
+    return SearchResponse(query=q, indexer_id=indexer_id, craft=craft, results=results)
+
+
+@router.get("/external/{indexer_id}/{external_id:path}")
+async def api_external_detail(
+    indexer_id: str,
+    external_id: str,
+    craft: str = Query("cross_stitch"),
 ):
     try:
         indexer = get_indexer(indexer_id)
     except KeyError:
         raise HTTPException(404, "Indexer not found")
-    results = await indexer.search(q, limit=limit)
-    return SearchResponse(query=q, indexer_id=indexer_id, results=results)
-
-
-@router.get("/external/{indexer_id}/{external_id}")
-async def api_external_detail(indexer_id: str, external_id: str):
-    try:
-        indexer = get_indexer(indexer_id)
-    except KeyError:
-        raise HTTPException(404, "Indexer not found")
-    return await indexer.get_pattern(external_id)
-
-
-@router.post("/wanted")
-async def api_add_wanted(body: WantedCreate):
-    await catalog.ensure_release_from_indexer(body.indexer_id, body.external_id)
-    try:
-        wid = catalog.add_to_wanted(body.indexer_id, body.external_id)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"wanted_id": wid}
-
-
-@router.get("/wanted")
-def api_list_wanted():
-    return catalog.list_wanted()
+    return await indexer.get_pattern(external_id, craft=craft)
 
 
 @router.get("/patterns")
@@ -79,6 +155,55 @@ def api_list_patterns(
     return catalog.list_patterns(downloaded_only=downloaded, limit=limit)
 
 
+@router.delete("/patterns/{pattern_id}")
+def api_delete_pattern(pattern_id: int):
+    try:
+        catalog.delete_pattern(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    return {"deleted": True, "pattern_id": pattern_id}
+
+
+@router.get("/patterns/{pattern_id}/pdf-info")
+def api_pdf_info(pattern_id: int):
+    try:
+        return catalog.pdf_info(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/patterns/{pattern_id}/raster-preview")
+def api_raster_preview(pattern_id: int, page: int = Query(1, ge=1)):
+    try:
+        data = catalog.raster_preview_jpeg(pattern_id, pdf_page=page)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(content=data, media_type="image/jpeg")
+
+
+@router.post("/patterns/{pattern_id}/convert-chart")
+def api_convert_pattern_chart(pattern_id: int, body: ConvertChartRequest | None = None):
+    crop = body.crop if body else None
+    pdf_page = body.pdf_page if body else None
+    try:
+        message = catalog.convert_pattern_to_chart(pattern_id, crop=crop, pdf_page=pdf_page)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"pattern_id": pattern_id, "message": message}
+
+
 @router.get("/patterns/{pattern_id}")
 def api_pattern_detail(pattern_id: int):
     detail = catalog.get_pattern_detail(pattern_id)
@@ -87,17 +212,34 @@ def api_pattern_detail(pattern_id: int):
     return detail
 
 
+@router.patch("/patterns/{pattern_id}")
+def api_update_pattern(pattern_id: int, body: PatternUpdate):
+    try:
+        return catalog.update_pattern(pattern_id, title=body.title, description=body.description)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.put("/patterns/{pattern_id}/chart")
+def api_save_chart(pattern_id: int, body: ChartSaveRequest):
+    try:
+        return catalog.save_chart(pattern_id, body)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/patterns/{pattern_id}/thumbnail")
 def api_pattern_thumbnail(pattern_id: int):
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT thumbnail_path FROM patterns WHERE id = ?", (pattern_id,)
-        ).fetchone()
-    if not row or not row["thumbnail_path"]:
+    try:
+        path = catalog.ensure_thumbnail(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    if not path or not path.is_file():
         raise HTTPException(404, "No thumbnail")
-    path = Path(row["thumbnail_path"])
-    if not path.is_file():
-        raise HTTPException(404, "Thumbnail missing")
     return FileResponse(path, media_type="image/jpeg")
 
 
@@ -109,6 +251,18 @@ def api_pattern_files(pattern_id: int):
             (pattern_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+@router.patch("/patterns/{pattern_id}/files/{file_id}")
+def api_rename_pattern_file(pattern_id: int, file_id: int, body: FileRenameRequest):
+    try:
+        return catalog.rename_pattern_file(pattern_id, file_id, body.filename)
+    except KeyError:
+        raise HTTPException(404, "File not found")
+    except FileNotFoundError:
+        raise HTTPException(404, "File missing on disk")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/patterns/{pattern_id}/file/{file_id}")
@@ -199,21 +353,77 @@ def api_update_project(pattern_id: int, body: ProjectUpdate):
     return api_get_project(pattern_id)
 
 
-@router.post("/import/upload", response_model=ImportResult)
-async def api_upload(file: UploadFile = File(...)):
+async def _import_upload_file(
+    file: UploadFile,
+    *,
+    craft: str,
+) -> ImportResult:
     import tempfile
 
-    suffix = Path(file.filename or "upload").suffix
+    if get_craft(craft) is None:
+        raise HTTPException(400, "Unknown craft")
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
+        if not content:
+            tmp_path = Path(tmp.name)
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(400, "Empty file")
         tmp.write(content)
         tmp_path = Path(tmp.name)
-    with get_conn() as conn:
-        pid, dup, msg = import_local_file(conn, tmp_path, title=Path(file.filename or "").stem)
-    tmp_path.unlink(missing_ok=True)
+    try:
+        with get_conn() as conn:
+            pid, dup, msg = import_local_file(
+                conn,
+                tmp_path,
+                title=Path(filename).stem,
+                craft=craft,
+            )
+    finally:
+        tmp_path.unlink(missing_ok=True)
     if dup:
         return ImportResult(pattern_id=None, duplicate_of=dup, message=msg)
     return ImportResult(pattern_id=pid, duplicate_of=None, message=msg)
+
+
+@router.post("/import/upload", response_model=ImportResult)
+async def api_upload(
+    file: UploadFile = File(...),
+    craft: str = Form("cross_stitch"),
+):
+    return await _import_upload_file(file, craft=craft)
+
+
+@router.post("/import/upload-many")
+async def api_upload_many(
+    files: list[UploadFile] = File(...),
+    craft: str = Form("cross_stitch"),
+):
+    if not files:
+        raise HTTPException(400, "No files provided")
+    results: list[ImportResult] = []
+    for file in files:
+        results.append(await _import_upload_file(file, craft=craft))
+    return results
+
+
+@router.post("/import/from-indexer", response_model=ImportResult)
+async def api_import_from_indexer(body: ImportFromIndexer):
+    if get_craft(body.craft) is None:
+        raise HTTPException(400, "Unknown craft")
+    try:
+        get_indexer(body.indexer_id)
+    except KeyError:
+        raise HTTPException(404, "Indexer not found")
+    try:
+        return await import_from_indexer(body.indexer_id, body.external_id, craft=body.craft)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found on source")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Import failed: {e}") from e
 
 
 @router.post("/import/sample-oxs", response_model=ImportResult)

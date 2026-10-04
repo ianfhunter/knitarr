@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +10,8 @@ from knitarr.api.routes import router as api_router
 from knitarr.db import init_db
 from knitarr.indexers.registry import bootstrap_indexers, shutdown_indexers
 from knitarr.services import catalog
-from knitarr.services.wanted_worker import worker_loop
+from knitarr.services.craft_files import init_craft_files
+from knitarr.services.indexer_craft import init_indexer_craft
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("knitarr")
@@ -22,14 +22,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    init_craft_files()
     bootstrap_indexers()
+    init_indexer_craft()
     catalog.seed_indexers()
-    stop = asyncio.Event()
-    task = asyncio.create_task(worker_loop(stop))
     log.info("Knitarr started")
     yield
-    stop.set()
-    await task
     await shutdown_indexers()
 
 

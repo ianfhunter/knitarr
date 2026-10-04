@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import mimetypes
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,9 +12,14 @@ import httpx
 from PIL import Image
 
 from knitarr.config import settings
+from knitarr.db import get_conn
+from knitarr.indexers.registry import get_indexer
 from knitarr.models import ExternalDetail, LicenseClass, PatternFormat
 from knitarr.parsers.oxs import metadata_from_oxs, parse_oxs, write_normalized
 from knitarr.services import dedupe
+from knitarr.services.chart_conversion import try_convert_upload_to_chart
+from knitarr.services.checksum import sha256_file
+from knitarr.services.image_to_oxs import DOCUMENT_SUFFIXES, raster_preview_image
 
 log = logging.getLogger(__name__)
 
@@ -23,23 +28,31 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _detect_format(filename: str) -> PatternFormat:
     lower = filename.lower()
     if lower.endswith(".oxs"):
         return PatternFormat.OXS
     if lower.endswith(".pdf"):
         return PatternFormat.PDF
+    if lower.endswith((".xps", ".oxps")):
+        return PatternFormat.XPS
+    if lower.endswith(".saga"):
+        return PatternFormat.SAGA
+    if lower.endswith(".xsp"):
+        return PatternFormat.XSP
     if lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
         return PatternFormat.IMAGE
     return PatternFormat.UNKNOWN
+
+
+_PRIMARY_RANK = {
+    ".oxs": 0,
+    ".saga": 1,
+    ".xps": 2,
+    ".oxps": 3,
+    ".pdf": 4,
+    ".xsp": 5,
+}
 
 
 async def download_urls(
@@ -68,7 +81,10 @@ async def download_urls(
 
 def _make_thumbnail(path: Path, thumb_path: Path) -> None:
     try:
-        if path.suffix.lower() == ".pdf":
+        suffix = path.suffix.lower()
+        if suffix in DOCUMENT_SUFFIXES or suffix == ".xsp":
+            im = raster_preview_image(path, max_side=320)
+            im.save(thumb_path, format="JPEG", quality=85)
             return
         with Image.open(path) as im:
             im.thumbnail((320, 320))
@@ -87,13 +103,9 @@ def import_downloaded_files(
     if not file_paths:
         return None, None, "No files to import"
 
-    primary = file_paths[0]
-    for p in file_paths:
-        if p.suffix.lower() in (".oxs", ".pdf"):
-            primary = p
-            break
+    primary = min(file_paths, key=lambda p: _PRIMARY_RANK.get(p.suffix.lower(), 99))
 
-    checksum = _sha256_file(primary)
+    checksum = sha256_file(primary)
     dup = dedupe.find_checksum_duplicate(conn, checksum)
     if dup:
         return None, dup, f"Duplicate file already in library (pattern #{dup})"
@@ -109,7 +121,7 @@ def import_downloaded_files(
         dest = pattern_dir / src.name
         if src.resolve() != dest.resolve():
             shutil.copy2(src, dest)
-        cs = _sha256_file(dest)
+        cs = sha256_file(dest)
         mime, _ = mimetypes.guess_type(dest.name)
         stored_files.append((dest, cs, mime or "application/octet-stream"))
         stored_names.append(src.name)
@@ -217,22 +229,64 @@ def import_downloaded_files(
         (pattern_id, now),
     )
 
-    return pattern_id, None, "Imported successfully"
+    msg = "Imported successfully"
+    primary_path = final_dir / primary.name
+    try:
+        conv = try_convert_upload_to_chart(
+            conn,
+            pattern_id,
+            final_dir,
+            primary_path,
+            title=detail.title,
+            craft=detail.craft,
+        )
+    except ValueError as e:
+        log.info("Skipped chart conversion for pattern %s: %s", pattern_id, e)
+        conv = None
+    if conv:
+        msg = f"{msg} {conv}"
+
+    return pattern_id, None, msg
 
 
 def import_local_file(
     conn,
     src_path: Path,
     title: str | None = None,
+    *,
+    craft: str = "cross_stitch",
     license_class: LicenseClass = LicenseClass.USER_OWNED,
 ) -> tuple[int | None, int | None, str]:
     detail = ExternalDetail(
-        indexer_id="manual",
+        indexer_id="user_import",
         external_id=src_path.name,
         title=title or src_path.stem,
-        source_url=str(src_path),
+        source_url="",
+        craft=craft,
         license_class=license_class,
         redistribution_allowed=False,
         download_available=True,
     )
     return import_downloaded_files(conn, detail, [src_path], None)
+
+
+async def import_from_indexer(indexer_id: str, external_id: str, *, craft: str = "cross_stitch"):
+    from knitarr.models import ImportResult
+    from knitarr.services import catalog
+
+    indexer = get_indexer(indexer_id)
+    detail = await indexer.get_pattern(external_id, craft=craft)
+    release_id = catalog.upsert_external_release(detail)
+    spec = await indexer.get_download(external_id, craft=craft)
+    if not spec:
+        raise ValueError("This source has no downloadable file — open the site and import it yourself")
+    urls = spec.all_urls if spec.all_urls else [(spec.url, spec.filename)]
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = await download_urls(urls, Path(tmp), settings.ia_user_agent)
+        with get_conn() as conn:
+            pattern_id, dup, msg = import_downloaded_files(conn, detail, paths, release_id)
+    if dup:
+        return ImportResult(pattern_id=None, duplicate_of=dup, message=msg)
+    if not pattern_id:
+        raise ValueError(msg or "Import failed")
+    return ImportResult(pattern_id=pattern_id, duplicate_of=None, message=msg)
