@@ -12,9 +12,12 @@ type LibrarySection =
   | "crochet"
   | "knitting"
   | "diamond_painting"
+  | "beading"
+  | "iron_beading"
   | "embroidery"
   | "sewing"
   | "quilting"
+  | "origami"
   | "other";
 
 const SETTINGS_VIEWS: View[] = [
@@ -24,16 +27,57 @@ const SETTINGS_VIEWS: View[] = [
   "settings_about",
 ];
 
+const NEEDLEWORK_CRAFTS: LibrarySection[] = ["embroidery", "cross_stitch"];
+const YARNWORK_CRAFTS: LibrarySection[] = ["knitting", "crochet"];
+const PIXEL_CRAFTS: LibrarySection[] = ["diamond_painting", "beading", "iron_beading"];
+const FABRIC_CONSTRUCTION_CRAFTS: LibrarySection[] = ["sewing", "quilting"];
+const PAPERCRAFT_CRAFTS: LibrarySection[] = ["origami"];
+
 const LIBRARY_SECTIONS: { id: LibrarySection; label: string; slug: string }[] = [
-  { id: "cross_stitch", label: "Cross-stitch", slug: "cross-stitch" },
-  { id: "crochet", label: "Crochet", slug: "crochet" },
-  { id: "knitting", label: "Knitting", slug: "knitting" },
-  { id: "diamond_painting", label: "Diamond Painting", slug: "diamond-painting" },
   { id: "embroidery", label: "Embroidery", slug: "embroidery" },
+  { id: "cross_stitch", label: "Cross-stitch", slug: "cross-stitch" },
+  { id: "knitting", label: "Knitting", slug: "knitting" },
+  { id: "crochet", label: "Crochet", slug: "crochet" },
+  { id: "diamond_painting", label: "Diamond Painting", slug: "diamond-painting" },
+  { id: "beading", label: "Beading", slug: "beading" },
+  { id: "iron_beading", label: "Iron Beading", slug: "iron-beading" },
   { id: "sewing", label: "Sewing", slug: "sewing" },
   { id: "quilting", label: "Quilting", slug: "quilting" },
+  { id: "origami", label: "Origami", slug: "origami" },
   { id: "other", label: "Other", slug: "other" },
 ];
+
+type LibraryNavGroupId =
+  | "needlework"
+  | "yarnwork"
+  | "pixel_crafts"
+  | "fabric_construction"
+  | "papercraft";
+
+type LibraryNavItem =
+  | { kind: "section"; id: LibrarySection }
+  | { kind: "group"; id: LibraryNavGroupId; label: string; children: LibrarySection[] };
+
+const LIBRARY_NAV: LibraryNavItem[] = [
+  { kind: "group", id: "needlework", label: "Needlework", children: NEEDLEWORK_CRAFTS },
+  { kind: "group", id: "yarnwork", label: "Yarnwork", children: YARNWORK_CRAFTS },
+  { kind: "group", id: "pixel_crafts", label: "Pixel Crafts", children: PIXEL_CRAFTS },
+  {
+    kind: "group",
+    id: "fabric_construction",
+    label: "Fabric Construction",
+    children: FABRIC_CONSTRUCTION_CRAFTS,
+  },
+  { kind: "group", id: "papercraft", label: "Papercraft", children: PAPERCRAFT_CRAFTS },
+  { kind: "section", id: "other" },
+];
+
+function libraryNavGroupForSection(section: LibrarySection): LibraryNavGroupId | null {
+  for (const item of LIBRARY_NAV) {
+    if (item.kind === "group" && item.children.includes(section)) return item.id;
+  }
+  return null;
+}
 
 function isSettingsView(v: View) {
   return SETTINGS_VIEWS.includes(v);
@@ -318,6 +362,8 @@ let searchResultHits: ExternalHit[] = [];
 let searchResultsCacheNote = "";
 let searchResultSourceFilter = sessionStorage.getItem("knitarr_result_source") || "all";
 let searchResultSort = (sessionStorage.getItem("knitarr_result_sort") as ResultSort) || "title_asc";
+/** Bumps when a new search starts so late indexer responses don't overwrite newer results. */
+let searchGeneration = 0;
 type SymbolMode = "none" | "alphabet" | "numbers" | "symbols" | "alt";
 const SYMBOL_MODES: { id: SymbolMode; label: string }[] = [
   { id: "none", label: "No symbols" },
@@ -488,12 +534,31 @@ function closeMobileNav() {
 function shell(content: string, activeView: View = view) {
   const settingsOpen = isSettingsView(activeView);
   const libraryOpen = isLibraryView(activeView);
-  const librarySubs = LIBRARY_SECTIONS.map(
-    (s) =>
-      `<button type="button" data-view="library" data-library-section="${s.id}" class="nav-sub-btn${
+  const openNavGroup = libraryOpen ? libraryNavGroupForSection(librarySection) : null;
+  const librarySubs = LIBRARY_NAV.map((item) => {
+    if (item.kind === "section") {
+      const s = LIBRARY_SECTIONS.find((x) => x.id === item.id)!;
+      return `<button type="button" data-view="library" data-library-section="${s.id}" class="nav-sub-btn${
         libraryOpen && librarySection === s.id ? " active" : ""
-      }">${s.label}</button>`
-  ).join("");
+      }">${s.label}</button>`;
+    }
+    const groupOpen = openNavGroup === item.id;
+    const childBtns = item.children
+      .map((id) => {
+        const s = LIBRARY_SECTIONS.find((x) => x.id === id)!;
+        return `<button type="button" data-view="library" data-library-section="${s.id}" class="nav-sub-btn nav-sub-nested${
+          libraryOpen && librarySection === s.id ? " active" : ""
+        }">${s.label}</button>`;
+      })
+      .join("");
+    return `
+      <div class="nav-nested-group${groupOpen ? " is-open" : ""}" data-nav-group="${item.id}">
+        <button type="button" class="nav-sub-btn nav-sub-group-label${
+          groupOpen ? " active" : ""
+        }" data-nav-group-toggle="${item.id}" aria-expanded="${groupOpen ? "true" : "false"}">${item.label}</button>
+        <div class="nav-sub-nested-list" role="group" aria-label="${item.label}">${childBtns}</div>
+      </div>`;
+  }).join("");
   const libraryBlock = `
     <div class="nav-group">
       <button type="button" data-view="library" data-library-section="${librarySection}" class="nav-parent${
@@ -565,6 +630,18 @@ function shell(content: string, activeView: View = view) {
       }
       closeMobileNav();
       render();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-nav-group-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const group = btn.closest(".nav-nested-group");
+      if (!group) return;
+      const open = group.classList.toggle("is-open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      const groupId = btn.dataset.navGroupToggle as LibraryNavGroupId | undefined;
+      const sectionInGroup = !!groupId && libraryNavGroupForSection(librarySection) === groupId;
+      btn.classList.toggle("active", open || sectionInGroup);
     });
   });
 }
@@ -704,13 +781,21 @@ function indexerOptions() {
   return opts.join("");
 }
 
+const CARD_PLACEHOLDER = "/placeholder.svg";
+
+function cardThumb(src: string | null | undefined, alt = "") {
+  const url = (src || "").trim() || CARD_PLACEHOLDER;
+  const ph = url === CARD_PLACEHOLDER ? " is-placeholder" : "";
+  // onerror swaps to the Knitarr logo once; avoids loops if the placeholder itself fails.
+  return `<img class="card-thumb${ph}" src="${escapeHtml(url)}" alt="${escapeHtml(
+    alt
+  )}" loading="lazy" onerror="if(!this.dataset.ph){this.dataset.ph='1';this.src='${CARD_PLACEHOLDER}';this.classList.add('is-placeholder')}" />`;
+}
+
 function hitCard(hit: ExternalHit) {
-  const thumb = hit.thumbnail_url
-    ? `<img src="${hit.thumbnail_url}" alt="" loading="lazy" />`
-    : `<div style="height:140px;background:#ddd"></div>`;
   return `
     <article class="card" data-ext="${hit.indexer_id}|${hit.external_id}">
-      ${thumb}
+      ${cardThumb(hit.thumbnail_url)}
       <div class="card-body">
         <h3>${escapeHtml(hit.title)}</h3>
         <div class="meta">${escapeHtml(hit.designer || "Unknown")} · <span class="badge">${escapeHtml(indexerName(hit.indexer_id))}</span></div>
@@ -727,15 +812,12 @@ function isUserUpload(source: string | null | undefined) {
 }
 
 function patternCard(p: PatternSummary) {
-  const thumb = p.thumbnail_url
-    ? `<img src="${p.thumbnail_url}" alt="" loading="lazy" />`
-    : `<div style="height:140px;background:#ddd;display:flex;align-items:center;justify-content:center;color:#888">${p.pattern_format.toUpperCase()}</div>`;
   const delBtn = isUserUpload(p.source)
     ? `<button type="button" class="secondary btn-del-pat" data-pid="${p.id}">Delete</button>`
     : "";
   return `
     <article class="card" data-pid="${p.id}">
-      ${thumb}
+      ${cardThumb(p.thumbnail_url, p.title)}
       <div class="card-body">
         <h3>${escapeHtml(p.title)}</h3>
         <div class="meta">${p.width_stitches || "?"}×${p.height_stitches || "?"} · ${p.color_count ?? "?"} colours</div>
@@ -907,8 +989,7 @@ async function runPatternSearch(
   resultsEl: HTMLElement,
   limit = 24
 ) {
-  const btn = document.getElementById("doSearch") as HTMLButtonElement | null;
-  if (btn) btn.disabled = true;
+  const gen = ++searchGeneration;
   searchResultsCacheNote = "";
   resultsEl.innerHTML = "";
   document.getElementById("resultsToolbar")?.classList.add("is-hidden");
@@ -919,44 +1000,63 @@ async function runPatternSearch(
       `/api/search?q=${encodeURIComponent(q)}&indexer_id=${encodeURIComponent(id)}&craft=${encodeURIComponent(craftId)}&limit=${limit}`
     );
 
+  const stillCurrent = () => gen === searchGeneration && document.getElementById("results") === resultsEl;
+
   try {
     let hits: ExternalHit[] = [];
     if (indexerId === "all") {
       const sources = searchableIndexers();
       const total = sources.length || 1;
+      const batches: ExternalHit[][] = sources.map(() => []);
       let done = 0;
-      setSearchProgress(true, { percent: 0, indeterminate: false, label: `Searching 0 / ${total} sources…` });
-      const batches = await Promise.all(
-        sources.map(async (idx) => {
+      setSearchProgress(true, {
+        percent: 0,
+        indeterminate: false,
+        label: `Searching 0 / ${total} sources…`,
+      });
+
+      await Promise.all(
+        sources.map(async (idx, i) => {
           try {
-            return await searchOne(idx.id);
+            const data = await searchOne(idx.id);
+            batches[i] = data.results;
           } catch {
-            return { results: [] as ExternalHit[] };
-          } finally {
-            done += 1;
-            const pct = Math.round((done / total) * 100);
-            setSearchProgress(true, {
-              percent: pct,
-              indeterminate: false,
-              label: `Searching ${done} / ${total} — ${idx.name}`,
-            });
+            batches[i] = [];
           }
+          if (!stillCurrent()) return;
+          done += 1;
+          hits = fairMergeHits(batches, limit);
+          const pct = Math.round((done / total) * 100);
+          const found = hits.length;
+          setSearchProgress(true, {
+            percent: pct,
+            indeterminate: false,
+            label:
+              done < total
+                ? `Searching ${done} / ${total} — ${idx.name}${
+                    found ? ` · ${found} result${found === 1 ? "" : "s"} so far` : ""
+                  }`
+                : `Done — ${found} result${found === 1 ? "" : "s"}`,
+          });
+          // Paint as soon as any source returns — don't wait for the rest.
+          if (found) paintSearchResults(hits);
         })
       );
-      hits = fairMergeHits(
-        batches.map((b) => b.results),
-        limit
-      );
+      if (!stillCurrent()) return;
+      hits = fairMergeHits(batches, limit);
     } else {
       setSearchProgress(true, {
         indeterminate: true,
         label: `Searching ${indexerName(indexerId)}…`,
       });
       const data = await searchOne(indexerId);
+      if (!stillCurrent()) return;
       hits = data.results;
+      if (hits.length) paintSearchResults(hits);
       setSearchProgress(true, { percent: 100, indeterminate: false, label: "Done" });
     }
 
+    if (!stillCurrent()) return;
     setSearchProgress(false);
     saveSavedSearch(q, indexerId, craftId, hits);
     if (!hits.length) {
@@ -966,10 +1066,9 @@ async function runPatternSearch(
     }
     paintSearchResults(hits);
   } catch (e) {
+    if (!stillCurrent()) return;
     setSearchProgress(false);
     resultsEl.innerHTML = `<p class="empty">${escapeHtml(String(e))}</p>`;
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -1360,11 +1459,35 @@ async function uploadFilesToLibrary(files: FileList | File[], craftId: string, s
   }
 }
 
+function canCreateBlankProject(craftId: string) {
+  return (
+    isChartCraft(craftId) || craftId === "crochet" || craftId === "knitting"
+  );
+}
+
+function isChartCraft(craftId: string | null | undefined) {
+  return (
+    craftId === "cross_stitch" ||
+    craftId === "diamond_painting" ||
+    craftId === "beading" ||
+    craftId === "iron_beading"
+  );
+}
+
+function isPixelCraft(craftId: string | null | undefined) {
+  return (
+    craftId === "diamond_painting" ||
+    craftId === "beading" ||
+    craftId === "iron_beading"
+  );
+}
+
 async function createBlankProject(craftId: string, statusEl: HTMLElement) {
   const title = prompt("Project title", "Untitled")?.trim();
   if (title == null) return;
-  if (craftId !== "cross_stitch") {
-    statusEl.textContent = "Blank projects are currently only available for cross stitch.";
+  if (!canCreateBlankProject(craftId)) {
+    statusEl.textContent =
+      "Blank projects are only available for chart crafts (including beading), crochet, and knitting.";
     return;
   }
   statusEl.textContent = "Creating blank project…";
@@ -1414,15 +1537,27 @@ async function renderLibrary() {
             <p class="meta">Multiple files upload one pattern per file. Duplicates are skipped by checksum.</p>
           </div>
         </div>
-        <div class="library-action library-action-blank${selectedCraftId === "cross_stitch" ? "" : " is-disabled"}">
+        <div class="library-action library-action-blank${
+          canCreateBlankProject(selectedCraftId) ? "" : " is-disabled"
+        }">
           <h3>Create blank project</h3>
           <p class="meta">${
-            selectedCraftId === "cross_stitch"
-              ? "Start an empty cross-stitch chart and design it in the editor."
-              : "Blank projects are currently only available for cross-stitch."
+            selectedCraftId === "crochet"
+              ? "Start an empty crochet pattern and add instruction lines in the editor."
+              : selectedCraftId === "knitting"
+                ? "Start an empty knitting pattern and add instruction lines in the editor."
+                : selectedCraftId === "diamond_painting"
+                  ? "Start an empty diamond painting chart and place drills in the editor."
+                  : selectedCraftId === "beading"
+                    ? "Start an empty beading chart and place beads in the editor."
+                    : selectedCraftId === "iron_beading"
+                      ? "Start an empty iron-bead (fuse bead) chart and place beads in the editor."
+                      : selectedCraftId === "cross_stitch"
+                        ? "Start an empty cross-stitch chart and design it in the editor."
+                        : "Blank projects are available for chart crafts, crochet, and knitting."
           }</p>
           <button type="button" class="secondary" id="createBlank"${
-            selectedCraftId === "cross_stitch" ? "" : " disabled"
+            canCreateBlankProject(selectedCraftId) ? "" : " disabled"
           }>Create blank project</button>
         </div>
       </div>
@@ -2249,18 +2384,39 @@ async function renderPattern() {
   }
   const savedCropState = loadPatternCropState(p.id);
   let selectedPdfPage = savedCropState?.pdfPage ?? 1;
+  const isDiamond = p.craft === "diamond_painting";
+  const isBeading = p.craft === "beading" || p.craft === "iron_beading";
+  const isPixel = isPixelCraft(p.craft);
+  const chartCraft = isChartCraft(p.craft);
+  const isEmbroideryCraft = p.craft === "embroidery" || p.craft === "quilting";
+  const isOrigami = p.craft === "origami";
   const canRasterConvert =
     isUserUpload(p.source) &&
-    p.craft === "cross_stitch" &&
+    chartCraft &&
     (p.pattern_format === "image" ||
       p.pattern_format === "pdf" ||
       p.pattern_format === "xps" ||
       imgs.length > 0 ||
       !!pagedFile);
   const canStructuredConvert =
-    isUserUpload(p.source) && p.craft === "cross_stitch" && (!!sagaFile || !!xspFile || p.pattern_format === "saga" || p.pattern_format === "xsp");
+    isUserUpload(p.source) &&
+    p.craft === "cross_stitch" &&
+    (!!sagaFile || !!xspFile || p.pattern_format === "saga" || p.pattern_format === "xsp");
   const canConvert = canRasterConvert || canStructuredConvert;
-  const convertLabel = p.has_normalized ? "Reprocess Stitch Chart" : "Generate stitch chart";
+  const convertLabel = p.has_normalized
+    ? isPixel
+      ? isBeading
+        ? "Reprocess bead chart"
+        : "Reprocess drill chart"
+      : "Reprocess Stitch Chart"
+    : isPixel
+      ? isBeading
+        ? "Generate bead chart"
+        : "Generate drill chart"
+      : "Generate stitch chart";
+  const cellWord = isDiamond ? "drill" : isBeading ? "bead" : "stitch";
+  const cellWordPlural = isDiamond ? "drills" : isBeading ? "beads" : "stitches";
+  const defaultFabricCount = isPixel ? 10 : 14;
 
   const iconGrid = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>`;
   const iconEdit = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
@@ -2295,7 +2451,9 @@ async function renderPattern() {
             <div class="mode-slider" role="tablist" aria-label="Chart mode">
               <button type="button" class="mode-btn active" data-mode="chart" title="Chart view" aria-label="Chart view">${iconGrid}<span>Chart</span></button>
               <button type="button" class="mode-btn" data-mode="edit" title="Edit" aria-label="Edit">${iconEdit}</button>
-              <button type="button" class="mode-btn" data-mode="preview" title="Thread preview" aria-label="Preview">${iconEye}</button>
+              <button type="button" class="mode-btn" data-mode="preview" title="${
+                isPixel ? (isBeading ? "Bead preview" : "Drill preview") : "Thread preview"
+              }" aria-label="Preview">${iconEye}</button>
             </div>
           </div>
           <div class="chart-toolbar-right">
@@ -2304,12 +2462,20 @@ async function renderPattern() {
         </div>
         <div class="edit-tools is-hidden" id="editTools">
           <div class="icon-group tool-group" role="group" aria-label="Edit tools">
-            <button type="button" class="icon-btn tool-btn active" data-tool="stitch" title="Stitch" aria-label="Stitch">${iconStitch}</button>
-            <button type="button" class="icon-btn tool-btn" data-tool="erase" title="Erase stitch" aria-label="Erase">${iconErase}</button>
+            <button type="button" class="icon-btn tool-btn active" data-tool="stitch" title="${
+              isPixel ? (isBeading ? "Place bead" : "Place drill") : "Stitch"
+            }" aria-label="${
+              isPixel ? (isBeading ? "Place bead" : "Place drill") : "Stitch"
+            }">${iconStitch}</button>
+            <button type="button" class="icon-btn tool-btn" data-tool="erase" title="Erase ${cellWord}" aria-label="Erase">${iconErase}</button>
             <button type="button" class="icon-btn tool-btn" data-tool="fill" title="Bucket fill" aria-label="Bucket fill">${iconFill}</button>
-            <button type="button" class="icon-btn tool-btn" data-tool="backstitch" title="Backstitch" aria-label="Backstitch">${iconBackstitch}</button>
+            ${
+              isPixel
+                ? ""
+                : `<button type="button" class="icon-btn tool-btn" data-tool="backstitch" title="Backstitch" aria-label="Backstitch">${iconBackstitch}</button>
             <button type="button" class="icon-btn tool-btn" data-tool="part" title="Partial stitch" aria-label="Partial stitch">${iconPart}</button>
-            <button type="button" class="icon-btn tool-btn" data-tool="knot" title="French knot" aria-label="French knot">${iconKnot}</button>
+            <button type="button" class="icon-btn tool-btn" data-tool="knot" title="French knot" aria-label="French knot">${iconKnot}</button>`
+            }
           </div>
           <div class="icon-group" role="group" aria-label="History">
             <button type="button" class="icon-btn" id="undoEdit" disabled title="Undo (Ctrl+Z)" aria-label="Undo">${iconUndo}</button>
@@ -2317,10 +2483,14 @@ async function renderPattern() {
           </div>
           <div class="chart-size-fields" role="group" aria-label="Chart size">
             <label class="size-field">W
-              <input type="number" id="chartWidth" min="1" max="800" step="1" value="${p.width_stitches || 20}" title="Width in stitches" aria-label="Width in stitches" />
+              <input type="number" id="chartWidth" min="1" max="800" step="1" value="${
+                p.width_stitches || 20
+              }" title="Width in ${cellWordPlural}" aria-label="Width in ${cellWordPlural}" />
             </label>
             <label class="size-field">H
-              <input type="number" id="chartHeight" min="1" max="800" step="1" value="${p.height_stitches || 20}" title="Height in stitches" aria-label="Height in stitches" />
+              <input type="number" id="chartHeight" min="1" max="800" step="1" value="${
+                p.height_stitches || 20
+              }" title="Height in ${cellWordPlural}" aria-label="Height in ${cellWordPlural}" />
             </label>
           </div>
           <span class="meta edit-hint" id="editHint">Click a legend colour, then paint.</span>
@@ -2353,20 +2523,32 @@ async function renderPattern() {
               <h3>Legend</h3>
               <button type="button" class="icon-btn is-hidden" id="addColor" title="Add colour" aria-label="Add colour">${iconPlus}</button>
             </div>
-            <label class="legend-fabric-count">Fabric count
-              <input type="number" id="legendFabricCount" min="6" max="40" step="1" value="14" title="Stitches per inch" aria-label="Fabric count" />
+            <label class="legend-fabric-count">${isPixel ? (isBeading ? "Bead density" : "Drill density") : "Fabric count"}
+              <input type="number" id="legendFabricCount" min="6" max="40" step="1" value="${defaultFabricCount}" title="${
+                isPixel ? (isBeading ? "Beads per inch (chart grid)" : "Drills per inch (≈10 for standard canvas)") : "Stitches per inch"
+              }" aria-label="${isPixel ? (isBeading ? "Bead density" : "Drill density") : "Fabric count"}" />
             </label>
             <div id="legendBody"></div>
             <div class="skein-estimate" id="skeinEstimate">
-              <h4>Skein estimate</h4>
-              <p class="meta">Based on ~8&nbsp;m skeins and the <a href="https://www.mismatch.co.uk/cross.htm#floss_amt" target="_blank" rel="noopener">mismatch.co.uk</a> floss-amount guide. Buy counts round up.</p>
+              <h4>${isPixel ? (isBeading ? "Bead estimate" : "Drill estimate") : "Skein estimate"}</h4>
+              <p class="meta">${
+                isPixel
+                  ? `One ${cellWord} per chart cell. Bag counts match the colour totals below.`
+                  : `Based on ~8&nbsp;m skeins and the <a href="https://www.mismatch.co.uk/cross.htm#floss_amt" target="_blank" rel="noopener">mismatch.co.uk</a> floss-amount guide. Buy counts round up.`
+              }</p>
               <div id="skeinEstimateBody"></div>
             </div>
             <div class="fabric-size-estimate" id="fabricSizeEstimate">
-              <h4>Fabric size</h4>
-              <p class="meta">Stitched image and suggested cut size with border, following the <a href="https://www.thread-bare.com/tools/cross-stitch-fabric-size-calculator" target="_blank" rel="noopener">Thread-Bare</a> calculator.</p>
+              <h4>${isPixel ? "Canvas size" : "Fabric size"}</h4>
+              <p class="meta">${
+                isPixel
+                  ? `Finished ${cellWord} area and suggested canvas with border, using grid density.`
+                  : `Stitched image and suggested cut size with border, following the <a href="https://www.thread-bare.com/tools/cross-stitch-fabric-size-calculator" target="_blank" rel="noopener">Thread-Bare</a> calculator.`
+              }</p>
               <label class="legend-fabric-count">Border each side
-                <input type="number" id="legendFabricBorder" min="0" max="12" step="0.5" value="3" title="Extra fabric per side (inches)" aria-label="Border each side in inches" />
+                <input type="number" id="legendFabricBorder" min="0" max="12" step="0.5" value="3" title="Extra ${
+                  isPixel ? "canvas" : "fabric"
+                } per side (inches)" aria-label="Border each side in inches" />
                 <span class="meta">in</span>
               </label>
               <div id="fabricSizeEstimateBody"></div>
@@ -2420,7 +2602,11 @@ async function renderPattern() {
     ? `<details class="panel collapsible-panel" id="cropPanel"${p.has_normalized ? "" : " open"}>
         <summary><h3>Show Original File + Crop</h3></summary>
         <p class="meta">Drag the box or handles to focus on the pattern area${
-          p.has_normalized ? ", then reprocess the stitch chart" : ""
+          p.has_normalized
+            ? isPixel
+              ? `, then reprocess the ${cellWord} chart`
+              : ", then reprocess the stitch chart"
+            : ""
         }.</p>
         ${pagedFile ? pdfPageBarHtml("crop", pdfPageCount) : ""}
         <div id="cropMount"></div>
@@ -2437,6 +2623,210 @@ async function renderPattern() {
           <button type="button" class="primary" id="convertChart">${convertLabel}</button>
         </div>`
       : "";
+
+  const yarnCraft = p.craft === "crochet" || p.craft === "knitting" ? p.craft : null;
+  type YarnDoc = import("./instructions").YarnDoc;
+  let yarnDoc: YarnDoc | null = null;
+  let yarnUi: typeof import("./instructions") | null = null;
+  if (yarnCraft) {
+    yarnUi = await import("./instructions");
+    const apiSeg = yarnUi.apiBase(yarnCraft);
+    try {
+      yarnDoc = await api<YarnDoc>(`/api/patterns/${p.id}/${apiSeg}`);
+    } catch (e) {
+      yarnDoc = {
+        format: yarnCraft === "knitting" ? "knitarr_knitting_v1" : "knitarr_crochet_v1",
+        craft: yarnCraft,
+        title: p.title,
+        dialect: "US",
+        lines: [],
+        supplies: yarnUi.emptySupplies("US"),
+        warnings: [String(e)],
+      };
+    }
+  }
+
+  const yarnSupplies = yarnUi
+    ? yarnUi.normalizeSupplies(yarnDoc?.supplies, yarnDoc?.dialect)
+    : null;
+  const suppliesBlurb =
+    yarnCraft === "knitting"
+      ? "Needles, yarn, terminology, and other materials. Filled from the PDF when possible."
+      : "Hook, yarn, terminology, and other materials. Filled from the PDF when possible.";
+
+  const yarnViewer =
+    yarnCraft && yarnUi && yarnSupplies
+      ? `<div class="panel yarn-panel">
+        <div class="yarn-toolbar">
+          <div class="mode-slider" role="tablist" aria-label="${escapeHtml(yarnCraft)} mode">
+            <button type="button" class="mode-btn active" data-yarn-mode="view" title="View">View</button>
+            <button type="button" class="mode-btn" data-yarn-mode="edit" title="Edit instructions">Edit</button>
+          </div>
+          <div class="yarn-toolbar-actions">
+            <button type="button" class="secondary" id="yarnExtract">Extract from PDF</button>
+            <button type="button" class="primary" id="yarnSave">Save</button>
+          </div>
+        </div>
+        <p class="meta" id="yarnStatus" aria-live="polite">${
+          yarnDoc?.warnings?.length ? escapeHtml(yarnDoc.warnings.join(" · ")) : ""
+        }</p>
+        <div class="yarn-split">
+          <section class="yarn-left" aria-label="Instruction lines">
+            <h3>Instructions</h3>
+            <div class="yarn-lines" id="yarnLines">${yarnUi.renderLineEditors(yarnDoc?.lines || [], false)}</div>
+          </section>
+          <section class="yarn-right" aria-label="Pattern supplies">
+            <h3>Supplies</h3>
+            <p class="meta">${suppliesBlurb}</p>
+            <div id="yarnSupplies">${yarnUi.renderSupplies(yarnSupplies, yarnCraft)}</div>
+          </section>
+        </div>
+      </div>`
+      : "";
+
+  type MachineMeta = {
+    stitch_count?: number;
+    color_count?: number | null;
+    width_mm?: number | null;
+    height_mm?: number | null;
+    threads?: { hex: string; description: string }[];
+    source_filename?: string;
+    source_suffix?: string;
+    preview_png_url?: string | null;
+    preview_svg_url?: string | null;
+  };
+  type OrigamiView = {
+    meta: {
+      vertex_count?: number;
+      edge_count?: number;
+      face_count?: number;
+      assignment_counts?: Record<string, number>;
+      frame_title?: string;
+      source_filename?: string;
+      file_spec?: string | null;
+    };
+    preview_svg_url?: string;
+  };
+
+  let machineMeta: MachineMeta | null = null;
+  let origamiView: OrigamiView | null = null;
+  if (isEmbroideryCraft) {
+    try {
+      machineMeta = await api<MachineMeta>(`/api/patterns/${p.id}/embroidery`);
+    } catch {
+      machineMeta = null;
+    }
+  } else if (isOrigami) {
+    try {
+      origamiView = await api<OrigamiView>(`/api/patterns/${p.id}/origami`);
+    } catch {
+      origamiView = null;
+    }
+  }
+
+  const machineViewer = isEmbroideryCraft
+    ? `<div class="panel machine-panel">
+        <div class="yarn-toolbar">
+          <h3 class="machine-heading">Machine design</h3>
+          <div class="yarn-toolbar-actions">
+            <button type="button" class="secondary" id="machineExtract">Re-parse file</button>
+          </div>
+        </div>
+        ${
+          machineMeta
+            ? `<div class="machine-meta">
+                <p class="meta">${escapeHtml(machineMeta.source_filename || "Machine file")}${
+                  machineMeta.source_suffix
+                    ? ` · ${escapeHtml(machineMeta.source_suffix.toUpperCase())}`
+                    : ""
+                }${
+                  machineMeta.stitch_count != null
+                    ? ` · ${machineMeta.stitch_count.toLocaleString()} stitches`
+                    : ""
+                }${
+                  machineMeta.width_mm != null && machineMeta.height_mm != null
+                    ? ` · ${machineMeta.width_mm}×${machineMeta.height_mm} mm`
+                    : ""
+                }</p>
+                ${
+                  machineMeta.preview_png_url || machineMeta.preview_svg_url
+                    ? `<div class="image-viewer machine-preview">
+                        <img src="${
+                          machineMeta.preview_png_url || machineMeta.preview_svg_url
+                        }" alt="Stitch preview" />
+                      </div>`
+                    : `<p class="meta">Parsed, but no preview image was generated for this format.</p>`
+                }
+                ${
+                  machineMeta.threads?.length
+                    ? `<div class="machine-threads">
+                        <h4>Threads</h4>
+                        <div class="thread-swatches">${machineMeta.threads
+                          .map(
+                            (t, i) =>
+                              `<span class="thread-swatch" style="--swatch:${escapeHtml(
+                                t.hex
+                              )}" title="${escapeHtml(t.description || `Thread ${i + 1}`)}"></span>`
+                          )
+                          .join("")}</div>
+                      </div>`
+                    : ""
+                }
+              </div>`
+            : `<p class="empty">No machine file parsed yet. Upload DST, PES, JEF, EXP, CSQ, VP3, or similar, then Re-parse.</p>`
+        }
+      </div>`
+    : "";
+
+  const origamiViewerHtml = isOrigami
+    ? `<div class="panel origami-panel">
+        <div class="yarn-toolbar">
+          <h3 class="machine-heading">Crease pattern</h3>
+          <div class="yarn-toolbar-actions">
+            <button type="button" class="secondary" id="origamiExtract">Re-parse FOLD</button>
+          </div>
+        </div>
+        ${
+          origamiView
+            ? `<p class="meta">${escapeHtml(
+                origamiView.meta.frame_title || origamiView.meta.source_filename || "FOLD"
+              )}${
+                origamiView.meta.vertex_count != null
+                  ? ` · ${origamiView.meta.vertex_count} vertices`
+                  : ""
+              }${
+                origamiView.meta.edge_count != null
+                  ? ` · ${origamiView.meta.edge_count} edges`
+                  : ""
+              }${
+                origamiView.meta.face_count != null
+                  ? ` · ${origamiView.meta.face_count} faces`
+                  : ""
+              }</p>
+              <div class="image-viewer origami-preview">
+                <img src="${
+                  origamiView.preview_svg_url || `/api/patterns/${p.id}/origami/preview.svg`
+                }" alt="Crease pattern" />
+              </div>
+              <p class="meta">Mountain (red dashed) · Valley (blue dotted) · Border (black). FOLD is the usual digital origami interchange format.</p>`
+            : `<p class="empty">No FOLD crease pattern found. Upload a .fold (or FOLD JSON) file, then Re-parse.</p>`
+        }
+        ${
+          !origamiView && originalViewer
+            ? `<div class="origami-fallback">${originalViewer}</div>`
+            : ""
+        }
+      </div>`
+    : "";
+
+  const craftViewer = yarnCraft
+    ? yarnViewer
+    : isEmbroideryCraft
+      ? machineViewer
+      : isOrigami
+        ? origamiViewerHtml
+        : `<div class="panel">${viewerHtml || `<p class="empty">No viewer for this format.</p>`}</div>`;
+
   shell(`
     <div class="panel">
       <button class="secondary" id="backLib">← ${escapeHtml(librarySectionLabel())}</button>
@@ -2444,10 +2834,54 @@ async function renderPattern() {
         <h2 id="patternTitle">${escapeHtml(p.title)}</h2>
         <button type="button" class="secondary" id="renameTitle">Rename</button>
       </div>
-      <p class="meta">${p.pattern_format.toUpperCase()} · ${escapeHtml(p.craft)}${p.source_url ? ` · <a href="${p.source_url}" target="_blank">source</a>` : ""}</p>
+      <p class="meta">${p.pattern_format.toUpperCase()} · ${escapeHtml(p.craft)}</p>
       ${uploadActions}
       <p>${escapeHtml(p.description || "")}</p>
-      <details class="file-list collapsible-panel" open>
+      <details class="provenance-box collapsible-panel">
+        <summary class="file-list-header">
+          <h3>Data provenance</h3>
+        </summary>
+        <div class="provenance-fields">
+          <label class="provenance-field">
+            <span class="provenance-label">License</span>
+            <select id="provenanceLicense">
+              ${[
+                ["USER_OWNED", "User owned"],
+                ["PUBLIC_DOMAIN", "Public domain"],
+                ["CC0", "CC0"],
+                ["CREATIVE_COMMONS", "Creative Commons"],
+                ["FREE_WITH_RESTRICTIONS", "Free with restrictions"],
+                ["FREE_DOWNLOAD_NONREDISTRIBUTABLE", "Free download (non-redistributable)"],
+                ["PURCHASE_REQUIRED", "Purchase required"],
+                ["UNKNOWN", "Unknown"],
+              ]
+                .map(
+                  ([id, label]) =>
+                    `<option value="${id}"${p.license_class === id ? " selected" : ""}>${label}</option>`
+                )
+                .join("")}
+            </select>
+          </label>
+          <label class="provenance-field">
+            <span class="provenance-label">Link</span>
+            <div class="provenance-link-row">
+              <input type="url" id="provenanceLink" placeholder="https://…" value="${escapeHtml(
+                p.source_url || ""
+              )}" />
+              <a class="secondary provenance-open-link${
+                p.source_url ? "" : " is-hidden"
+              }" id="provenanceOpenLink" href="${escapeHtml(
+                p.source_url || "#"
+              )}" target="_blank" rel="noopener">Open</a>
+            </div>
+          </label>
+          <div class="provenance-actions">
+            <button type="button" class="secondary" id="provenanceSave">Save provenance</button>
+            <span class="meta" id="provenanceStatus" aria-live="polite"></span>
+          </div>
+        </div>
+      </details>
+      <details class="file-list collapsible-panel"${yarnCraft ? "" : " open"}>
         <summary class="file-list-header">
           <h3>Files</h3>
           <span class="meta file-list-count">${files.length} file${files.length === 1 ? "" : "s"}</span>
@@ -2476,7 +2910,7 @@ async function renderPattern() {
       </details>
     </div>
     ${cropPanel}
-    <div class="panel">${viewerHtml || `<p class="empty">No viewer for this format.</p>`}</div>
+    ${craftViewer}
   `, "pattern");
 
   let cropApi: { getCrop: () => NormCrop; reset: () => void } | null = null;
@@ -2550,6 +2984,26 @@ async function renderPattern() {
     if (document.querySelector('[data-pdf-bar="orig"]')) wirePdfPageBar("orig");
   }
 
+  document.getElementById("machineExtract")?.addEventListener("click", async () => {
+    try {
+      await api(`/api/patterns/${p.id}/embroidery/extract`, { method: "POST" });
+      selectedPatternId = p.id;
+      render();
+    } catch (e) {
+      alert(String(e));
+    }
+  });
+
+  document.getElementById("origamiExtract")?.addEventListener("click", async () => {
+    try {
+      await api(`/api/patterns/${p.id}/origami/extract`, { method: "POST" });
+      selectedPatternId = p.id;
+      render();
+    } catch (e) {
+      alert(String(e));
+    }
+  });
+
   document.getElementById("renameTitle")?.addEventListener("click", async () => {
     const next = prompt("Rename pattern", p.title);
     if (next == null) return;
@@ -2565,6 +3019,43 @@ async function renderPattern() {
       render();
     } catch (e) {
       alert(String(e));
+    }
+  });
+
+  document.getElementById("provenanceSave")?.addEventListener("click", async () => {
+    const status = document.getElementById("provenanceStatus");
+    const license = (document.getElementById("provenanceLicense") as HTMLSelectElement | null)
+      ?.value;
+    const link = (document.getElementById("provenanceLink") as HTMLInputElement | null)?.value ?? "";
+    if (status) status.textContent = "Saving…";
+    try {
+      await api(`/api/patterns/${p.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          license_class: license || "UNKNOWN",
+          source_url: link.trim(),
+        }),
+      });
+      selectedPatternId = p.id;
+      render();
+    } catch (e) {
+      if (status) status.textContent = String(e);
+      else alert(String(e));
+    }
+  });
+
+  document.getElementById("provenanceLink")?.addEventListener("input", () => {
+    const input = document.getElementById("provenanceLink") as HTMLInputElement;
+    const open = document.getElementById("provenanceOpenLink") as HTMLAnchorElement | null;
+    if (!open) return;
+    const v = input.value.trim();
+    if (v) {
+      open.href = v;
+      open.classList.remove("is-hidden");
+    } else {
+      open.href = "#";
+      open.classList.add("is-hidden");
     }
   });
 
@@ -2688,12 +3179,95 @@ async function renderPattern() {
     render();
   });
 
+  if (yarnCraft && yarnDoc && yarnUi) {
+    const ui = yarnUi;
+    const craft = yarnCraft;
+    const apiSeg = ui.apiBase(craft);
+    let yarnEditMode = false;
+    const linesEl = document.getElementById("yarnLines")!;
+    const suppliesEl = document.getElementById("yarnSupplies")!;
+    const statusEl = document.getElementById("yarnStatus")!;
+    const saveBtn = document.getElementById("yarnSave")!;
+
+    const wireAddLine = () => {
+      document.getElementById("yarnAddLine")?.addEventListener("click", () => {
+        yarnEditMode = true;
+        document.querySelectorAll("[data-yarn-mode]").forEach((b) => {
+          b.classList.toggle("active", (b as HTMLElement).dataset.yarnMode === "edit");
+        });
+        const current = ui.readLinesFromDom(linesEl);
+        current.push("");
+        renderYarnLines(current, true);
+        const last = linesEl.querySelector<HTMLTextAreaElement>("textarea:last-of-type");
+        last?.focus();
+      });
+    };
+
+    const renderYarnLines = (lines: string[], editable: boolean) => {
+      linesEl.innerHTML = ui.renderLineEditors(lines, editable);
+      wireAddLine();
+    };
+
+    const applyYarnDoc = (doc: YarnDoc) => {
+      yarnDoc = doc;
+      renderYarnLines(doc.lines || [], yarnEditMode);
+      suppliesEl.innerHTML = ui.renderSupplies(ui.normalizeSupplies(doc.supplies, doc.dialect), craft);
+      statusEl.textContent = (doc.warnings || []).join(" · ");
+    };
+
+    applyYarnDoc(yarnDoc);
+
+    document.querySelectorAll<HTMLButtonElement>("[data-yarn-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        yarnEditMode = btn.dataset.yarnMode === "edit";
+        document.querySelectorAll("[data-yarn-mode]").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const current = ui.readLinesFromDom(linesEl);
+        renderYarnLines(current.length ? current : yarnDoc?.lines || [], yarnEditMode);
+      });
+    });
+
+    document.getElementById("yarnExtract")?.addEventListener("click", async () => {
+      statusEl.textContent = "Extracting instructions from PDF…";
+      try {
+        const doc = await api<YarnDoc>(`/api/patterns/${p.id}/${apiSeg}/extract`, { method: "POST" });
+        applyYarnDoc(doc);
+        statusEl.textContent = (doc.warnings || []).join(" · ") || "Extracted.";
+      } catch (e) {
+        statusEl.textContent = String(e);
+      }
+    });
+
+    saveBtn.addEventListener("click", async () => {
+      statusEl.textContent = "Saving…";
+      try {
+        const supplies = ui.readSuppliesFromDom(craft);
+        const doc = await api<YarnDoc>(`/api/patterns/${p.id}/${apiSeg}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lines: ui.readLinesFromDom(linesEl),
+            dialect: supplies.terminology || "US",
+            supplies,
+            title: p.title,
+          }),
+        });
+        applyYarnDoc(doc);
+        statusEl.textContent = (doc.warnings || []).join(" · ") || "Saved.";
+      } catch (e) {
+        statusEl.textContent = String(e);
+      }
+    });
+  }
+
   if (p.has_normalized) {
     const loaded = await api<Normalized>(`/api/patterns/${selectedPatternId}/normalized`);
     if (!loaded.backstitches) loaded.backstitches = [];
     if (!loaded.part_stitches) loaded.part_stitches = [];
     if (!loaded.ornaments) loaded.ornaments = [];
-    if (!loaded.fabric_count || loaded.fabric_count < 6) loaded.fabric_count = 14;
+    if (!loaded.fabric_count || loaded.fabric_count < 6) {
+      loaded.fabric_count = isPixel ? 10 : 14;
+    }
     for (const pal of loaded.palette) {
       const s = Number(pal.strands);
       pal.strands = Number.isFinite(s) ? Math.max(1, Math.min(6, Math.round(s))) : 2;
@@ -2965,25 +3539,28 @@ async function renderPattern() {
     const renderSkeinEstimate = () => {
       const body = document.getElementById("skeinEstimateBody");
       if (!body) return;
-      const fabricCount = Math.max(6, Math.min(40, Number(working.fabric_count) || 14));
+      const fabricCount = Math.max(6, Math.min(40, Number(working.fabric_count) || defaultFabricCount));
       const rows = working.palette
         .filter((x) => x.index > 0 && (x.stitch_count || 0) > 0)
         .map((pal) => {
+          const count = pal.stitch_count || 0;
           const strands = Math.max(1, Math.min(6, Number(pal.strands) || 2));
-          const needed = skeinsNeeded(pal.stitch_count || 0, fabricCount, strands);
+          const needed = isPixel ? count : skeinsNeeded(count, fabricCount, strands);
           const label = pal.name && pal.name !== pal.number ? `${pal.number} ${pal.name}` : pal.number || pal.name;
           return `<tr>
               <td><span class="swatch" style="background:${hexColor(pal.color)}"></span></td>
               <td>${escapeHtml(label)}</td>
-              <td class="num">${formatSkeins(needed)}</td>
+              <td class="num">${isPixel ? String(count) : formatSkeins(needed)}</td>
             </tr>`;
         });
       if (!rows.length) {
-        body.innerHTML = `<p class="meta">No stitches yet — estimates appear as you stitch.</p>`;
+        body.innerHTML = `<p class="meta">No ${cellWordPlural} yet — estimates appear as you ${
+          isPixel ? `place ${cellWordPlural}` : "stitch"
+        }.</p>`;
         return;
       }
       body.innerHTML = `<table class="skein-table">
-          <tr><th></th><th>Colour</th><th>Skeins</th></tr>
+          <tr><th></th><th>Colour</th><th>${isPixel ? (isBeading ? "Beads" : "Drills") : "Skeins"}</th></tr>
           ${rows.join("")}
         </table>`;
     };
@@ -2993,11 +3570,13 @@ async function renderPattern() {
       if (!body) return;
       const wSt = working.width_stitches || 0;
       const hSt = working.height_stitches || 0;
-      const currentCount = Math.max(6, Math.min(40, Number(working.fabric_count) || 14));
+      const currentCount = Math.max(6, Math.min(40, Number(working.fabric_count) || defaultFabricCount));
       const border = Math.max(0, Math.min(12, fabricBorderIn));
       if (fabricBorderInput) fabricBorderInput.value = String(border);
       if (wSt < 1 || hSt < 1) {
-        body.innerHTML = `<p class="meta">Set a chart size to see fabric dimensions.</p>`;
+        body.innerHTML = `<p class="meta">Set a chart size to see ${
+          isPixel ? "canvas" : "fabric"
+        } dimensions.</p>`;
         return;
       }
       const curW = fabricInches(wSt, currentCount);
@@ -3005,11 +3584,11 @@ async function renderPattern() {
       const fabW = curW + 2 * border;
       const fabH = curH + 2 * border;
       body.innerHTML = `
-        <p class="fabric-size-summary"><strong>${wSt} × ${hSt}</strong> stitches on <strong>${currentCount}-count</strong></p>
+        <p class="fabric-size-summary"><strong>${wSt} × ${hSt}</strong> ${cellWordPlural} on <strong>${currentCount}-count</strong></p>
         <table class="skein-table fabric-size-table">
           <tr><th></th><th>Width</th><th>Height</th></tr>
-          <tr><td>Stitched image</td><td class="num">${formatInches(curW)} (${formatCm(curW)})</td><td class="num">${formatInches(curH)} (${formatCm(curH)})</td></tr>
-          <tr><td>Suggested fabric</td><td class="num">${formatInches(fabW)} (${formatCm(fabW)})</td><td class="num">${formatInches(fabH)} (${formatCm(fabH)})</td></tr>
+          <tr><td>${isPixel ? (isBeading ? "Bead area" : "Drill area") : "Stitched image"}</td><td class="num">${formatInches(curW)} (${formatCm(curW)})</td><td class="num">${formatInches(curH)} (${formatCm(curH)})</td></tr>
+          <tr><td>${isPixel ? "Suggested canvas" : "Suggested fabric"}</td><td class="num">${formatInches(fabW)} (${formatCm(fabW)})</td><td class="num">${formatInches(fabH)} (${formatCm(fabH)})</td></tr>
         </table>`;
     };
 
@@ -3021,10 +3600,12 @@ async function renderPattern() {
     const renderLegend = () => {
       recount();
       const showSymCol = gridState.symbolMode !== "none";
-      if (fabricCountInput) fabricCountInput.value = String(working.fabric_count || 14);
+      if (fabricCountInput) fabricCountInput.value = String(working.fabric_count || defaultFabricCount);
       legend.innerHTML = `<table class="legend-table"><tr><th></th>${
         showSymCol ? "<th>Sym</th>" : ""
-      }<th>Code</th><th>Strands</th><th>Count</th></tr>${working.palette
+      }<th>Code</th>${isPixel ? "" : "<th>Strands</th>"}<th>${
+        isPixel ? (isBeading ? "Beads" : "Drills") : "Count"
+      }</th></tr>${working.palette
         .filter((x) => x.index > 0)
         .map((pal) => {
           const mark = symbolForPalette(working.palette, pal.index);
@@ -3041,9 +3622,13 @@ async function renderPattern() {
               </td>
               ${showSymCol ? `<td class="legend-sym">${escapeHtml(mark)}</td>` : ""}
               <td>${escapeHtml(pal.name && pal.name !== pal.number ? `${pal.number} ${pal.name}` : pal.number || pal.name)}</td>
-              <td class="legend-strands-cell">
+              ${
+                isPixel
+                  ? ""
+                  : `<td class="legend-strands-cell">
                 <input type="number" class="legend-strands" data-pal="${pal.index}" min="1" max="6" step="1" value="${strands}" title="Strands for this colour" aria-label="Strands for ${escapeHtml(pal.number || pal.name || "colour")}" />
-              </td>
+              </td>`
+              }
               <td>${pal.stitch_count ?? ""}</td>
             </tr>`;
         })

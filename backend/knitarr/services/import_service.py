@@ -29,6 +29,8 @@ def _utc_now() -> str:
 
 
 def _detect_format(filename: str) -> PatternFormat:
+    from knitarr.services.embroidery import MACHINE_SUFFIXES
+
     lower = filename.lower()
     if lower.endswith(".oxs"):
         return PatternFormat.OXS
@@ -40,18 +42,29 @@ def _detect_format(filename: str) -> PatternFormat:
         return PatternFormat.SAGA
     if lower.endswith(".xsp"):
         return PatternFormat.XSP
+    if lower.endswith(".fold"):
+        return PatternFormat.ORIGAMI
     if lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
         return PatternFormat.IMAGE
+    suf = Path(filename).suffix.lower()
+    if suf in MACHINE_SUFFIXES:
+        return PatternFormat.EMBROIDERY
     return PatternFormat.UNKNOWN
 
 
 _PRIMARY_RANK = {
     ".oxs": 0,
-    ".saga": 1,
-    ".xps": 2,
-    ".oxps": 3,
-    ".pdf": 4,
-    ".xsp": 5,
+    ".pes": 1,
+    ".dst": 2,
+    ".jef": 3,
+    ".exp": 4,
+    ".vp3": 5,
+    ".fold": 6,
+    ".saga": 7,
+    ".xps": 8,
+    ".oxps": 9,
+    ".pdf": 10,
+    ".xsp": 11,
 }
 
 
@@ -292,6 +305,25 @@ def import_downloaded_files(
                 )
         if upsert_chart_export(conn, pattern_id, final_dir, oxs_norm):
             msg = f"{msg} Chart Export.pdf ready."
+
+    # Machine embroidery / quilting designs
+    from knitarr.services.craft_files import MACHINE_CRAFTS
+    from knitarr.services.embroidery import is_machine_embroidery_file, process_machine_file
+    from knitarr.services.origami import is_fold_file, process_fold
+
+    if detail.craft in MACHINE_CRAFTS or is_machine_embroidery_file(primary_path):
+        try:
+            meta = process_machine_file(pattern_id, primary_path if is_machine_embroidery_file(primary_path) else None)
+            msg = f"{msg} Machine design parsed ({meta.get('stitch_count') or '?'} stitches)."
+        except Exception as e:
+            log.info("Machine embroidery parse skipped for pattern %s: %s", pattern_id, e)
+
+    if detail.craft == "origami" or is_fold_file(primary_path):
+        try:
+            ometa = process_fold(pattern_id, primary_path if is_fold_file(primary_path) else None)
+            msg = f"{msg} Origami crease pattern loaded ({ometa.get('edge_count') or '?'} edges)."
+        except Exception as e:
+            log.info("Origami parse skipped for pattern %s: %s", pattern_id, e)
 
     return pattern_id, None, msg
 

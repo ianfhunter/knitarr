@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from knitarr.models import (
     ChartSaveRequest,
     ConvertChartRequest,
     CraftFilesUpdate,
+    YarnSaveRequest,
     FileRenameRequest,
     RegeneratePackageRequest,
     ImportResult,
@@ -140,18 +142,22 @@ async def api_search(
         raise HTTPException(400, "Unknown craft")
     if indexer_id == "all":
         per_source = max(1, limit)
-        hit_lists: list[list] = []
-        for idx in list_indexers():
-            cap = idx.capabilities
-            if not cap.search_enabled or cap.status.value == "planned":
-                continue
-            if not is_indexer_enabled_for_craft(idx.id, craft):
-                continue
+        sources = [
+            idx
+            for idx in list_indexers()
+            if idx.capabilities.search_enabled
+            and idx.capabilities.status.value != "planned"
+            and is_indexer_enabled_for_craft(idx.id, craft)
+        ]
+
+        async def _one(idx):
             try:
-                hit_lists.append(await idx.search(q, limit=per_source, craft=craft))
+                return await idx.search(q, limit=per_source, craft=craft)
             except Exception:
-                hit_lists.append([])
-        merged = fair_merge_hits(hit_lists, limit)
+                return []
+
+        hit_lists = await asyncio.gather(*[_one(idx) for idx in sources])
+        merged = fair_merge_hits(list(hit_lists), limit)
         return SearchResponse(query=q, indexer_id="all", craft=craft, results=merged)
 
     try:
@@ -257,19 +263,257 @@ def api_regenerate_package(pattern_id: int, body: RegeneratePackageRequest | Non
 
 @router.post("/patterns/blank")
 def api_create_blank_pattern(body: BlankPatternRequest):
-    """Create an empty cross-stitch OXS project (default 20×20)."""
-    if body.craft and body.craft != "cross_stitch":
-        raise HTTPException(400, "Blank projects are currently only supported for cross stitch")
+    """Create an empty chart or yarn-craft instruction project."""
+    craft = (body.craft or "cross_stitch").strip() or "cross_stitch"
+    from knitarr.services.craft_files import CHART_CRAFTS
+
+    if craft not in CHART_CRAFTS and craft not in ("crochet", "knitting"):
+        raise HTTPException(
+            400,
+            "Blank projects are only supported for chart crafts (incl. pixel crafts), crochet, and knitting",
+        )
     try:
         detail = catalog.create_blank_pattern(
             title=body.title,
             width=body.width,
             height=body.height,
-            craft=body.craft or "cross_stitch",
+            craft=craft,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return detail
+
+
+def _yarn_craft_or_404(pattern_id: int, expected: str):
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, title, craft FROM patterns WHERE id = ?", (pattern_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Pattern not found")
+    if row["craft"] != expected:
+        raise HTTPException(400, f"This editor is only available for {expected} patterns")
+    return row, yarn_svc
+
+
+@router.get("/patterns/{pattern_id}/embroidery")
+def api_get_embroidery(pattern_id: int):
+    from knitarr.services import embroidery as emb_svc
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, craft FROM patterns WHERE id = ?", (pattern_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Pattern not found")
+    if row["craft"] not in ("embroidery", "quilting"):
+        raise HTTPException(400, "Embroidery viewer is only for embroidery/quilting patterns")
+    try:
+        meta = emb_svc.get_or_process(pattern_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    lib = settings.library_dir / str(pattern_id)
+    return {
+        **meta,
+        "preview_png_url": f"/api/patterns/{pattern_id}/embroidery/preview.png"
+        if (lib / emb_svc.PREVIEW_PNG).is_file()
+        else None,
+        "preview_svg_url": f"/api/patterns/{pattern_id}/embroidery/preview.svg"
+        if (lib / emb_svc.PREVIEW_SVG).is_file()
+        else None,
+    }
+
+
+@router.get("/patterns/{pattern_id}/embroidery/preview.png")
+def api_embroidery_preview_png(pattern_id: int):
+    from knitarr.services import embroidery as emb_svc
+
+    path = settings.library_dir / str(pattern_id) / emb_svc.PREVIEW_PNG
+    if not path.is_file():
+        try:
+            emb_svc.get_or_process(pattern_id)
+        except Exception:
+            pass
+    if not path.is_file():
+        raise HTTPException(404, "No embroidery preview")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get("/patterns/{pattern_id}/embroidery/preview.svg")
+def api_embroidery_preview_svg(pattern_id: int):
+    from knitarr.services import embroidery as emb_svc
+
+    path = settings.library_dir / str(pattern_id) / emb_svc.PREVIEW_SVG
+    if not path.is_file():
+        try:
+            emb_svc.get_or_process(pattern_id)
+        except Exception:
+            pass
+    if not path.is_file():
+        raise HTTPException(404, "No embroidery SVG preview")
+    return FileResponse(path, media_type="image/svg+xml")
+
+
+@router.post("/patterns/{pattern_id}/embroidery/extract")
+def api_embroidery_extract(pattern_id: int):
+    from knitarr.services import embroidery as emb_svc
+
+    with get_conn() as conn:
+        row = conn.execute("SELECT id, craft FROM patterns WHERE id = ?", (pattern_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Pattern not found")
+    if row["craft"] not in ("embroidery", "quilting"):
+        raise HTTPException(400, "Only embroidery/quilting patterns support machine parse")
+    try:
+        return emb_svc.process_machine_file(pattern_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/patterns/{pattern_id}/origami")
+def api_get_origami(pattern_id: int):
+    from knitarr.services import origami as ori_svc
+
+    with get_conn() as conn:
+        row = conn.execute("SELECT id, craft FROM patterns WHERE id = ?", (pattern_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Pattern not found")
+    if row["craft"] != "origami":
+        raise HTTPException(400, "Origami viewer is only for origami patterns")
+    try:
+        meta = ori_svc.get_or_process(pattern_id)
+        fold_path = ori_svc.find_fold_file(pattern_id)
+        fold = ori_svc.load_fold(fold_path) if fold_path else None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "meta": meta,
+        "fold": fold,
+        "preview_svg_url": f"/api/patterns/{pattern_id}/origami/preview.svg",
+    }
+
+
+@router.get("/patterns/{pattern_id}/origami/preview.svg")
+def api_origami_preview_svg(pattern_id: int):
+    from knitarr.services import origami as ori_svc
+
+    path = settings.library_dir / str(pattern_id) / ori_svc.PREVIEW_SVG
+    if not path.is_file():
+        try:
+            ori_svc.get_or_process(pattern_id)
+        except Exception:
+            pass
+    if not path.is_file():
+        raise HTTPException(404, "No origami preview")
+    return FileResponse(path, media_type="image/svg+xml")
+
+
+@router.post("/patterns/{pattern_id}/origami/extract")
+def api_origami_extract(pattern_id: int):
+    from knitarr.services import origami as ori_svc
+
+    with get_conn() as conn:
+        row = conn.execute("SELECT id, craft FROM patterns WHERE id = ?", (pattern_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Pattern not found")
+    if row["craft"] != "origami":
+        raise HTTPException(400, "Only origami patterns support FOLD extract")
+    try:
+        return ori_svc.process_fold(pattern_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.get("/patterns/{pattern_id}/crochet")
+def api_get_crochet(pattern_id: int):
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    try:
+        return yarn_svc.get_or_extract(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/patterns/{pattern_id}/crochet/extract")
+def api_extract_crochet(pattern_id: int):
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    try:
+        _yarn_craft_or_404(pattern_id, "crochet")
+        return yarn_svc.extract_from_pdf(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.put("/patterns/{pattern_id}/crochet")
+def api_save_crochet(pattern_id: int, body: YarnSaveRequest):
+    row, yarn_svc = _yarn_craft_or_404(pattern_id, "crochet")
+    existing = yarn_svc.load_document(pattern_id, "crochet") or yarn_svc.empty_document("crochet")
+    supplies = body.supplies.model_dump() if body.supplies is not None else existing.get("supplies")
+    dialect = (supplies or {}).get("terminology") or body.dialect or "US"
+    doc = {
+        **existing,
+        "title": body.title or row["title"] or existing.get("title") or "Untitled",
+        "dialect": dialect,
+        "lines": body.lines,
+        "supplies": supplies,
+    }
+    return yarn_svc.save_document(pattern_id, "crochet", doc)
+
+
+@router.get("/patterns/{pattern_id}/knitting")
+def api_get_knitting(pattern_id: int):
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    try:
+        return yarn_svc.get_or_extract(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/patterns/{pattern_id}/knitting/extract")
+def api_extract_knitting(pattern_id: int):
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    try:
+        _yarn_craft_or_404(pattern_id, "knitting")
+        return yarn_svc.extract_from_pdf(pattern_id)
+    except KeyError:
+        raise HTTPException(404, "Pattern not found")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.put("/patterns/{pattern_id}/knitting")
+def api_save_knitting(pattern_id: int, body: YarnSaveRequest):
+    row, yarn_svc = _yarn_craft_or_404(pattern_id, "knitting")
+    existing = yarn_svc.load_document(pattern_id, "knitting") or yarn_svc.empty_document("knitting")
+    supplies = body.supplies.model_dump() if body.supplies is not None else existing.get("supplies")
+    dialect = (supplies or {}).get("terminology") or body.dialect or "US"
+    doc = {
+        **existing,
+        "title": body.title or row["title"] or existing.get("title") or "Untitled",
+        "dialect": dialect,
+        "lines": body.lines,
+        "supplies": supplies,
+    }
+    return yarn_svc.save_document(pattern_id, "knitting", doc)
 
 
 @router.get("/patterns/{pattern_id}")
@@ -323,7 +567,13 @@ def api_pattern_zip(pattern_id: int):
 @router.patch("/patterns/{pattern_id}")
 def api_update_pattern(pattern_id: int, body: PatternUpdate):
     try:
-        return catalog.update_pattern(pattern_id, title=body.title, description=body.description)
+        return catalog.update_pattern(
+            pattern_id,
+            title=body.title,
+            description=body.description,
+            license_class=body.license_class,
+            source_url=body.source_url,
+        )
     except KeyError:
         raise HTTPException(404, "Pattern not found")
     except ValueError as e:
@@ -342,13 +592,19 @@ def api_save_chart(pattern_id: int, body: ChartSaveRequest):
 
 @router.get("/patterns/{pattern_id}/thumbnail")
 def api_pattern_thumbnail(pattern_id: int):
+    from knitarr.main import STATIC_DIR
+
     try:
         path = catalog.ensure_thumbnail(pattern_id)
     except KeyError:
         raise HTTPException(404, "Pattern not found")
-    if not path or not path.is_file():
-        raise HTTPException(404, "No thumbnail")
-    return FileResponse(path, media_type="image/jpeg")
+    if path and path.is_file():
+        return FileResponse(path, media_type="image/jpeg")
+    # Fall back to Knitarr logo so library cards never show a broken image.
+    placeholder = STATIC_DIR / "placeholder.svg"
+    if placeholder.is_file():
+        return FileResponse(placeholder, media_type="image/svg+xml")
+    raise HTTPException(404, "No thumbnail")
 
 
 @router.get("/patterns/{pattern_id}/files")

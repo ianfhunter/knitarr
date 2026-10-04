@@ -80,5 +80,11 @@ def favicon_32():
     return _static_file("favicon-32.png", "image/png")
 
 
+@app.get("/placeholder.svg")
+def placeholder_svg():
+    """Library card fallback when a pattern has no thumbnail."""
+    return _static_file("placeholder.svg", "image/svg+xml")
+
+
 if STATIC_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")

@@ -43,11 +43,15 @@ def try_convert_upload_to_chart(
     pdf_page: int = 0,
     symbol_mode: str | None = None,
 ) -> str | None:
-    if craft != "cross_stitch":
+    from knitarr.services.craft_files import CHART_CRAFTS, PIXEL_CRAFTS, default_fabric_count
+
+    if craft not in CHART_CRAFTS:
         return None
     suffix = primary.suffix.lower()
     mode = normalize_symbol_mode(symbol_mode)
     if suffix in STRUCTURED_SUFFIXES:
+        if craft != "cross_stitch":
+            return None
         norm = parse_saga(primary, title=title)
         recog = dict(norm.recognition or {})
         recog["symbol_mode"] = mode
@@ -89,10 +93,14 @@ def try_convert_upload_to_chart(
         recog = dict(norm.recognition or {})
         recog["symbol_mode"] = mode
         recog["conversion_source"] = CONVERSION_SOURCE_FILENAME
+        recog["craft"] = craft
         if crop:
             recog["crop"] = {"x": crop.x, "y": crop.y, "w": crop.w, "h": crop.h}
         if pdf_page >= 0:
             recog["pdf_page"] = pdf_page + 1
+        if craft in PIXEL_CRAFTS:
+            norm.fabric_count = default_fabric_count(craft)
+            notes.append(f"{craft.replace('_', ' ')} ({norm.fabric_count}-count grid)")
         norm.recognition = recog
         source = getattr(norm, "chart_source", None)
         if source == "symbols":

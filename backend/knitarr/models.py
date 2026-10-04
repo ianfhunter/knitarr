@@ -28,6 +28,10 @@ class PatternFormat(StrEnum):
     XPS = "xps"
     SAGA = "saga"
     XSP = "xsp"
+    CROCHET = "crochet"
+    KNITTING = "knitting"
+    EMBROIDERY = "embroidery"
+    ORIGAMI = "origami"
     UNKNOWN = "unknown"
 
 
@@ -187,6 +191,8 @@ class RegeneratePackageRequest(BaseModel):
 class PatternUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    license_class: LicenseClass | None = None
+    source_url: str | None = Field(default=None, max_length=2000)
 
 
 class BlankPatternRequest(BaseModel):
@@ -194,6 +200,31 @@ class BlankPatternRequest(BaseModel):
     width: int = Field(default=20, ge=1, le=800)
     height: int = Field(default=20, ge=1, le=800)
     craft: str = "cross_stitch"
+
+
+class YarnSupplies(BaseModel):
+    terminology: str = "US"
+    hook_size: str = ""
+    needle_size: str = ""
+    yarn: str = ""
+    yarn_amount: str = ""
+    gauge: str = ""
+    notions: str = ""
+    notes: str = ""
+
+
+# Back-compat alias for older imports/tests.
+CrochetSupplies = YarnSupplies
+
+
+class YarnSaveRequest(BaseModel):
+    lines: list[str] = Field(default_factory=list)
+    title: str | None = None
+    dialect: str = "US"
+    supplies: YarnSupplies | None = None
+
+
+CrochetSaveRequest = YarnSaveRequest
 
 
 class FileRenameRequest(BaseModel):

@@ -410,7 +410,9 @@ def convert_pattern_to_chart(
         )
         if not msg:
             raise ValueError(
-                "Could not convert this file (needs a readable .saga, XPS/PDF, or cross-stitch JPG/PNG)"
+                "Could not convert this file (needs a readable chart image, XPS/PDF"
+                + (", or .saga" if craft == "cross_stitch" else "")
+                + ")"
             )
         return msg
 
@@ -486,19 +488,42 @@ def sanitize_filename(name: str) -> str:
     return name
 
 
-def update_pattern(pattern_id: int, *, title: str | None = None, description: str | None = None) -> PatternDetail:
+def update_pattern(
+    pattern_id: int,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    license_class: LicenseClass | None = None,
+    source_url: str | None = None,
+) -> PatternDetail:
     with get_conn() as conn:
         row = conn.execute("SELECT id, title, normalized_path FROM patterns WHERE id = ?", (pattern_id,)).fetchone()
         if not row:
             raise KeyError(pattern_id)
-        new_title = title.strip() if title is not None else row["title"]
-        if not new_title:
-            raise ValueError("Title cannot be empty")
-        fields = ["title = ?"]
-        values: list = [new_title]
+        fields: list[str] = []
+        values: list = []
+        if title is not None:
+            new_title = title.strip()
+            if not new_title:
+                raise ValueError("Title cannot be empty")
+            fields.append("title = ?")
+            values.append(new_title)
+        else:
+            new_title = row["title"]
         if description is not None:
             fields.append("description = ?")
             values.append(description)
+        if license_class is not None:
+            fields.append("license_class = ?")
+            values.append(license_class.value)
+        if source_url is not None:
+            fields.append("source_url = ?")
+            values.append(source_url.strip())
+        if not fields:
+            detail = get_pattern_detail(pattern_id)
+            if not detail:
+                raise KeyError(pattern_id)
+            return detail
         values.append(pattern_id)
         conn.execute(f"UPDATE patterns SET {', '.join(fields)} WHERE id = ?", values)
         npath = Path(row["normalized_path"]) if row["normalized_path"] else None
@@ -828,6 +853,87 @@ def save_chart(pattern_id: int, body) -> PatternDetail:
     return detail
 
 
+def create_blank_yarn_pattern(*, craft: str, title: str | None = None) -> PatternDetail:
+    """Create an empty crochet/knitting instruction project."""
+    import hashlib
+    import uuid
+
+    from knitarr.services.checksum import sha256_file
+    from knitarr.services import yarn_pattern as yarn_svc
+
+    craft = yarn_svc.assert_yarn_craft(craft)
+    blank_id = uuid.uuid4().hex
+    name = (title or "").strip() or f"Untitled {blank_id[:8]}"
+    if len(name) > 200:
+        name = name[:200]
+    structure_fp = hashlib.sha256(f"blank|{craft}|{blank_id}".encode()).hexdigest()
+    now = _utc_now()
+    filename = yarn_svc.pattern_filename(craft)
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO patterns (
+                external_release_id, title, designer, source, source_url, pattern_url,
+                craft, description, license_class, redistribution_allowed, downloaded,
+                checksum_sha256, structure_fingerprint, pattern_format,
+                width_stitches, height_stitches, stitch_count, color_count, fabric_count,
+                floss_brand, date_discovered, date_downloaded, thumbnail_path, normalized_path
+            ) VALUES (NULL, ?, NULL, 'user_import', '', NULL, ?, '', ?, 0, 1,
+                      NULL, ?, ?, NULL, NULL, 0, 0, NULL, NULL, ?, ?, NULL, NULL)
+            """,
+            (
+                name,
+                craft,
+                LicenseClass.USER_OWNED.value,
+                structure_fp,
+                craft,
+                now,
+                now,
+            ),
+        )
+        pattern_id = int(cur.lastrowid)
+        lib_dir = settings.library_dir / str(pattern_id)
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        yarn_svc.save_document(pattern_id, craft, yarn_svc.empty_document(craft, title=name))
+        cpath = lib_dir / filename
+        checksum = sha256_file(cpath)
+        conn.execute(
+            "UPDATE patterns SET checksum_sha256 = ? WHERE id = ?",
+            (checksum, pattern_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO pattern_files (pattern_id, role, path, filename, mime_type, checksum_sha256, size_bytes)
+            VALUES (?, 'original', ?, ?, ?, ?, ?)
+            """,
+            (
+                pattern_id,
+                str(cpath),
+                filename,
+                "application/json",
+                checksum,
+                cpath.stat().st_size,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO projects (pattern_id, status, progress_json, updated_at)
+            VALUES (?, 'not_started', '{}', ?)
+            """,
+            (pattern_id, now),
+        )
+
+    detail = get_pattern_detail(pattern_id)
+    if not detail:
+        raise RuntimeError(f"Blank {craft} pattern created but could not be loaded")
+    return detail
+
+
+def create_blank_crochet_pattern(*, title: str | None = None) -> PatternDetail:
+    return create_blank_yarn_pattern(craft="crochet", title=title)
+
+
 def create_blank_pattern(
     *,
     title: str | None = None,
@@ -835,7 +941,7 @@ def create_blank_pattern(
     height: int = 20,
     craft: str = "cross_stitch",
 ) -> PatternDetail:
-    """Create an empty cross-stitch OXS project in the library."""
+    """Create an empty cross-stitch OXS or yarn-craft instruction project."""
     import hashlib
     import uuid
 
@@ -849,19 +955,29 @@ def create_blank_pattern(
     from knitarr.services.checksum import sha256_file
     from knitarr.services.chart_export import upsert_chart_export, upsert_chart_preview
 
+    craft = (craft or "cross_stitch").strip() or "cross_stitch"
+    if craft in ("crochet", "knitting"):
+        return create_blank_yarn_pattern(craft=craft, title=title)
+    from knitarr.services.craft_files import CHART_CRAFTS, default_fabric_count
+
+    if craft not in CHART_CRAFTS:
+        raise ValueError(
+            "Blank projects are only supported for chart crafts, crochet, and knitting"
+        )
+
     width = max(1, min(800, int(width)))
     height = max(1, min(800, int(height)))
-    craft = (craft or "cross_stitch").strip() or "cross_stitch"
     blank_id = uuid.uuid4().hex
     name = (title or "").strip() or f"Untitled {blank_id[:8]}"
     if len(name) > 200:
         name = name[:200]
+    fabric_count = default_fabric_count(craft)
 
     norm = NormalizedPattern(
         title=name,
         width_stitches=width,
         height_stitches=height,
-        fabric_count=14,
+        fabric_count=fabric_count,
         palette=[
             PaletteEntry(index=0, number="cloth", name="cloth", color="FFFFFF", symbol="100"),
             PaletteEntry(index=1, number="DMC 310", name="Black", color="000000", symbol="33"),
@@ -870,10 +986,10 @@ def create_blank_pattern(
         backstitches=[],
         part_stitches=[],
         ornaments=[],
-        recognition={"blank_id": blank_id},
+        recognition={"blank_id": blank_id, "craft": craft},
     )
     # Unique fingerprint so empty canvases of the same size never collide.
-    structure_fp = hashlib.sha256(f"blank|{blank_id}|{width}x{height}".encode()).hexdigest()
+    structure_fp = hashlib.sha256(f"blank|{craft}|{blank_id}|{width}x{height}".encode()).hexdigest()
     meta = metadata_from_oxs(norm)
     now = _utc_now()
 

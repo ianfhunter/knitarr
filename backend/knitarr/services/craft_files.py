@@ -38,9 +38,34 @@ DEFAULT_CRAFTS: dict[str, dict] = {
         "label": "Diamond Painting",
         "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
     },
+    "beading": {
+        "label": "Beading",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+    },
+    "iron_beading": {
+        "label": "Iron Beading",
+        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+    },
     "embroidery": {
         "label": "Embroidery",
-        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".dst", ".pes", ".jef", ".exp"],
+        "extensions": [
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".dst",
+            ".pes",
+            ".pec",
+            ".jef",
+            ".exp",
+            ".vp3",
+            ".xxx",
+            ".csq",
+            ".sew",
+            ".pcs",
+            ".10o",
+        ],
     },
     "sewing": {
         "label": "Sewing",
@@ -48,7 +73,24 @@ DEFAULT_CRAFTS: dict[str, dict] = {
     },
     "quilting": {
         "label": "Quilting",
-        "extensions": [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+        "extensions": [
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".hqf",
+            ".hqv",
+            ".iqp",
+            ".plt",
+            ".dst",
+            ".exp",
+            ".csq",
+        ],
+    },
+    "origami": {
+        "label": "Origami",
+        "extensions": [".fold", ".json", ".opx", ".svg", ".pdf", ".png", ".jpg", ".jpeg", ".webp"],
     },
     "other": {
         "label": "Other",
@@ -56,17 +98,24 @@ DEFAULT_CRAFTS: dict[str, dict] = {
     },
 }
 
-# Stable UI / API ordering.
+# Stable UI / API ordering (matches Library nav groups).
 CRAFT_ORDER = (
-    "cross_stitch",
-    "crochet",
-    "knitting",
-    "diamond_painting",
     "embroidery",
+    "cross_stitch",
+    "knitting",
+    "crochet",
+    "diamond_painting",
+    "beading",
+    "iron_beading",
     "sewing",
     "quilting",
+    "origami",
     "other",
 )
+
+PIXEL_CRAFTS = frozenset({"diamond_painting", "beading", "iron_beading"})
+CHART_CRAFTS = frozenset({"cross_stitch", *PIXEL_CRAFTS})
+MACHINE_CRAFTS = frozenset({"embroidery", "quilting"})
 
 _REMOVED_CRAFTS = ("pixel_art",)
 
@@ -119,36 +168,23 @@ def init_craft_files() -> None:
                 "SELECT extensions_json FROM craft_files WHERE craft_id = ?",
                 (craft_id,),
             ).fetchone()
-            current = json.loads(row["extensions_json"]) if row else []
-            extra = [e for e in spec["extensions"] if e in {".saga", ".xps", ".oxps", ".xsp", ".dst", ".pes", ".jef", ".exp"}]
-            merged = normalize_extensions(list(current) + extra)
-            if merged != normalize_extensions(current):
-                conn.execute(
-                    "UPDATE craft_files SET extensions_json = ? WHERE craft_id = ?",
-                    (json.dumps(merged), craft_id),
-                )
-
-        for removed in _REMOVED_CRAFTS:
-            conn.execute("DELETE FROM craft_files WHERE craft_id = ?", (removed,))
-            try:
-                conn.execute("DELETE FROM indexer_craft WHERE craft_id = ?", (removed,))
-            except Exception:
-                pass
-            # Keep old library rows visible under Embroidery rather than orphaning them.
-            try:
-                conn.execute(
-                    "UPDATE patterns SET craft = 'embroidery' WHERE craft = ?",
-                    (removed,),
-                )
-            except Exception:
-                pass
-
-
-def _sort_key(craft_id: str) -> tuple[int, str]:
-    try:
-        return (CRAFT_ORDER.index(craft_id), craft_id)
-    except ValueError:
-        return (len(CRAFT_ORDER), craft_id)
+            # Merge newly added default extensions into existing rows (additive).
+            if row:
+                try:
+                    current = set(json.loads(row["extensions_json"] or "[]"))
+                except json.JSONDecodeError:
+                    current = set()
+                merged = normalize_extensions(list(current) + list(spec["extensions"]))
+                if set(merged) != current:
+                    # Only add missing defaults; don't remove user choices.
+                    added = [e for e in spec["extensions"] if e not in current]
+                    if added:
+                        conn.execute(
+                            "UPDATE craft_files SET extensions_json = ? WHERE craft_id = ?",
+                            (json.dumps(normalize_extensions(list(current) + added)), craft_id),
+                        )
+        for craft_id in _REMOVED_CRAFTS:
+            conn.execute("DELETE FROM craft_files WHERE craft_id = ?", (craft_id,))
 
 
 def list_crafts() -> list[dict]:
@@ -156,18 +192,41 @@ def list_crafts() -> list[dict]:
         rows = conn.execute(
             "SELECT craft_id, label, extensions_json, enabled FROM craft_files"
         ).fetchall()
-    result = []
-    for row in rows:
-        result.append(
+    by_id = {r["craft_id"]: r for r in rows}
+    out: list[dict] = []
+    for craft_id in CRAFT_ORDER:
+        r = by_id.get(craft_id)
+        if not r:
+            continue
+        try:
+            exts = json.loads(r["extensions_json"] or "[]")
+        except json.JSONDecodeError:
+            exts = []
+        out.append(
             {
-                "craft_id": row["craft_id"],
-                "label": row["label"],
-                "extensions": json.loads(row["extensions_json"]),
-                "enabled": bool(row["enabled"]),
+                "craft_id": craft_id,
+                "label": r["label"],
+                "extensions": normalize_extensions(exts),
+                "enabled": bool(r["enabled"]),
             }
         )
-    result.sort(key=lambda c: _sort_key(c["craft_id"]))
-    return result
+    # Any unexpected crafts last
+    for craft_id, r in by_id.items():
+        if craft_id in CRAFT_ORDER:
+            continue
+        try:
+            exts = json.loads(r["extensions_json"] or "[]")
+        except json.JSONDecodeError:
+            exts = []
+        out.append(
+            {
+                "craft_id": craft_id,
+                "label": r["label"],
+                "extensions": normalize_extensions(exts),
+                "enabled": bool(r["enabled"]),
+            }
+        )
+    return out
 
 
 def get_craft(craft_id: str) -> dict | None:
@@ -178,19 +237,16 @@ def get_craft(craft_id: str) -> dict | None:
         ).fetchone()
     if not row:
         return None
+    try:
+        exts = json.loads(row["extensions_json"] or "[]")
+    except json.JSONDecodeError:
+        exts = []
     return {
         "craft_id": row["craft_id"],
         "label": row["label"],
-        "extensions": json.loads(row["extensions_json"]),
+        "extensions": normalize_extensions(exts),
         "enabled": bool(row["enabled"]),
     }
-
-
-def extensions_for_craft(craft_id: str) -> list[str]:
-    craft = get_craft(craft_id)
-    if not craft or not craft["enabled"]:
-        return normalize_extensions(DEFAULT_CRAFTS.get(craft_id, DEFAULT_CRAFTS["cross_stitch"])["extensions"])
-    return normalize_extensions(craft["extensions"])
 
 
 def update_craft(
@@ -200,41 +256,54 @@ def update_craft(
     extensions: list[str] | None = None,
     enabled: bool | None = None,
 ) -> dict:
-    if craft_id not in DEFAULT_CRAFTS and get_craft(craft_id) is None:
-        raise KeyError(craft_id)
-    current = get_craft(craft_id) or {
-        "craft_id": craft_id,
-        "label": craft_id,
-        "extensions": [],
-        "enabled": True,
-    }
-    new_label = label if label is not None else current["label"]
-    new_ext = normalize_extensions(extensions if extensions is not None else current["extensions"])
-    new_enabled = enabled if enabled is not None else current["enabled"]
-    if not new_ext:
-        raise ValueError("At least one file extension is required")
     with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO craft_files (craft_id, label, extensions_json, enabled)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(craft_id) DO UPDATE SET
-                label = excluded.label,
-                extensions_json = excluded.extensions_json,
-                enabled = excluded.enabled
-            """,
-            (craft_id, new_label, json.dumps(new_ext), 1 if new_enabled else 0),
-        )
-    return get_craft(craft_id)  # type: ignore[return-value]
+        row = conn.execute(
+            "SELECT craft_id FROM craft_files WHERE craft_id = ?", (craft_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(craft_id)
+        fields: list[str] = []
+        values: list = []
+        if label is not None:
+            fields.append("label = ?")
+            values.append(label.strip() or craft_id)
+        if extensions is not None:
+            fields.append("extensions_json = ?")
+            values.append(json.dumps(normalize_extensions(extensions)))
+        if enabled is not None:
+            fields.append("enabled = ?")
+            values.append(1 if enabled else 0)
+        if fields:
+            values.append(craft_id)
+            conn.execute(f"UPDATE craft_files SET {', '.join(fields)} WHERE craft_id = ?", values)
+    detail = get_craft(craft_id)
+    if not detail:
+        raise KeyError(craft_id)
+    return detail
+
+
+def extensions_for_craft(craft_id: str) -> list[str]:
+    c = get_craft(craft_id)
+    if c:
+        return c["extensions"]
+    return normalize_extensions(DEFAULT_CRAFTS.get(craft_id, DEFAULT_CRAFTS["cross_stitch"])["extensions"])
+
+
+def default_fabric_count(craft_id: str) -> int:
+    if craft_id in PIXEL_CRAFTS:
+        return 10
+    return 14
 
 
 def file_matches_craft(filename: str, craft_id: str) -> bool:
-    ext = Path(filename).suffix.lower()
-    if not ext:
+    """True if filename's extension is allowed for the craft."""
+    name = (filename or "").strip().lower()
+    if not name:
         return False
-    return ext in extensions_for_craft(craft_id)
-
-
-def filter_filenames(filenames: list[str], craft_id: str) -> list[str]:
+    # Strip query strings from URLs
+    name = name.split("?", 1)[0]
+    suf = Path(name).suffix.lower()
+    if not suf:
+        return False
     allowed = set(extensions_for_craft(craft_id))
-    return [n for n in filenames if Path(n).suffix.lower() in allowed]
+    return suf in allowed
