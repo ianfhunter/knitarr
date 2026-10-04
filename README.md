@@ -1,5 +1,7 @@
 # Knitarr
 
+(WARNING: This project is very much in prototype phase)
+
 A self-hosted crafting catalogue featuring pattern discovery, library curation and pattern modification.
 
 At present Knitarr is focussed on delivering a premium Cross-Stitch experience before we will enhance our other craft targets, but the end goal is to be a comprehensive platform for Needlework.
