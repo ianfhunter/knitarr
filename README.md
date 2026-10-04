@@ -29,7 +29,11 @@ At present Knitarr is focussed on delivering a premium Cross-Stitch experience b
 
 > Oh my god, TORRENTS?! Aren't they for illegal copyright stealing!? 
 
-We do not condone piracy. Torrenting however is a great mechanism for archival and distribution. Many creators of craft projects already give away their designs very generously for free, but most often these are on blogs which can be obscure to discover, or may become inaccessible over time. Distributed file-sharing allows more than one point of failure for these files.
+We do not condone piracy. Torrenting however is a great mechanism for archival and distribution. Many creators of craft projects already give away their designs very generously for free, but most often these are on blogs which can be obscure to discover, or may become inaccessible over time. Distributed file-sharing allows more than one point of failure for these files. See the [Internet Archive's torrent usage](https://help.archive.org/help/archive-bittorrents/), or various Linux distributions, for a similar positive example.
+
+> Okay I'm convinced, how do I use them?
+
+You will have to host the torrent files in another application or website. The burden of moderation is unfortunately too large for Knitarr to take on 
 
 > Why are you using these odd file formats I've never heard of?
 
